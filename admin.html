@@ -17,7 +17,7 @@
             border-radius: 10px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
             width: 100%;
-            max-width: 600px;
+            max-width: 800px;
             margin: 1rem auto;
         }
         h1, h2 {
@@ -67,7 +67,6 @@
         .message-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .message-error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         
-        /* 使用者列表樣式 */
         #user-list { list-style-type: none; padding: 0; }
         #user-list li {
             display: flex;
@@ -77,13 +76,37 @@
             padding: 1rem;
             border-bottom: 1px solid #eee;
         }
-        #user-list li:last-child { border-bottom: none; }
         .user-info { flex-grow: 1; }
         .user-deposit { display: flex; align-items: center; margin-top: 0.5rem; width: 100%; }
         @media (min-width: 600px) {
             .user-deposit { width: auto; margin-top: 0; }
         }
         .user-deposit input { width: 80px; margin-right: 0.5rem; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 0.75rem;
+            text-align: left;
+            word-break: break-word;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: 600;
+        }
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .refresh-btn {
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -127,12 +150,31 @@
         <div id="user-message" class="message-box"></div>
     </div>
 
+    <div class="container">
+        <div class="section-header">
+            <h2>今日訂單列表</h2>
+            <button onclick="loadOrders()" class="refresh-btn">重新整理訂單</button>
+        </div>
+        <table id="order-table">
+            <thead>
+                <tr>
+                    <th>訂單ID</th>
+                    <th>訂購人</th>
+                    <th>品項</th>
+                    <th>總金額</th>
+                    <th>狀態</th>
+                    <th>下單時間</th>
+                </tr>
+            </thead>
+            <tbody id="order-list">
+                <!-- 訂單將由 JavaScript 動態填入 -->
+            </tbody>
+        </table>
+        <div id="order-message" class="message-box"></div>
+    </div>
+
     <script>
         // =================================================================
-        // == 請在這裡填入您在 Railway 上的後端網址
-        // =================================================================
-        // 例如: 'https://lunch-bot-backend-production-1234.up.railway.app'
-        // 注意：網址最後不要有斜線 "/"
         const backendUrl = 'https://lunch-bot-backend-production.up.railway.app';
         // =================================================================
 
@@ -140,6 +182,8 @@
         const productMessageDiv = document.getElementById('product-message');
         const userList = document.getElementById('user-list');
         const userMessageDiv = document.getElementById('user-message');
+        const orderList = document.getElementById('order-list');
+        const orderMessageDiv = document.getElementById('order-message');
 
         // 新增產品的邏輯
         productForm.addEventListener('submit', async (event) => {
@@ -235,6 +279,40 @@
             }
         }
 
+        // 載入訂單列表
+        async function loadOrders() {
+            if (!checkBackendUrl()) return;
+            try {
+                const response = await fetch(`${backendUrl}/admin/orders`);
+                if (!response.ok) throw new Error('無法取得訂單列表');
+                
+                const orders = await response.json();
+                orderList.innerHTML = '';
+
+                if (orders.length === 0) {
+                    orderList.innerHTML = '<tr><td colspan="6" style="text-align: center;">目前沒有任何訂單。</td></tr>';
+                    return;
+                }
+
+                orders.forEach(order => {
+                    const tr = document.createElement('tr');
+                    const orderTime = new Date(order.created_at).toLocaleString('zh-TW', { hour12: false });
+                    tr.innerHTML = `
+                        <td>${order.id}</td>
+                        <td>${order.display_name}</td>
+                        <td>${order.items}</td>
+                        <td>$${parseFloat(order.total_amount).toFixed(2)}</td>
+                        <td>${order.status}</td>
+                        <td>${orderTime}</td>
+                    `;
+                    orderList.appendChild(tr);
+                });
+
+            } catch (error) {
+                showOrderMessage(`載入訂單失敗: ${error.message}`, 'error');
+            }
+        }
+
         // 檢查後端網址是否設定
         function checkBackendUrl() {
             if (backendUrl.startsWith('請貼上') || !backendUrl) {
@@ -256,10 +334,16 @@
             userMessageDiv.style.display = 'block';
             setTimeout(() => { userMessageDiv.style.display = 'none'; }, 3000);
         }
+        function showOrderMessage(text, type) {
+            orderMessageDiv.textContent = text;
+            orderMessageDiv.className = `message-box message-${type}`;
+            orderMessageDiv.style.display = 'block';
+        }
 
         // 頁面載入時自動執行
         window.onload = () => {
             loadUsers();
+            loadOrders();
         };
     </script>
 </body>

@@ -127,6 +127,32 @@ app.post('/admin/users/:id/deposit', async (req, res) => {
     }
 });
 
+// 取得所有訂單
+app.get('/admin/orders', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                o.id,
+                o.total_amount,
+                o.status,
+                o.created_at,
+                u.display_name,
+                STRING_AGG(p.name, ', ') as items
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN order_items oi ON o.id = oi.order_id
+            JOIN products p ON oi.product_id = p.id
+            GROUP BY o.id, u.display_name
+            ORDER BY o.created_at DESC;
+        `;
+        const result = await pool.query(query);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('取得訂單列表時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
 
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
 async function handleEvent(event) {
@@ -256,7 +282,7 @@ async function sendMenuFlexMessage(replyToken) {
       type: 'bubble',
       hero: {
         type: 'image',
-        url: product.image_url || 'https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image',
+        url: product.image_url || '[https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image](https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image)',
         size: 'full',
         aspectRatio: '20:13',
         aspectMode: 'cover',
