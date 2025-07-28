@@ -2,6 +2,7 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
+const cors = require('cors'); // <--- 引入 cors 套件
 
 // --- 2. 設定與 LINE Developer 後台相關的密鑰 ---
 const config = {
@@ -22,15 +23,19 @@ const pool = new Pool({
 const app = express();
 const client = new line.Client(config);
 
+// --- (重要修正) 啟用 CORS ---
+// 這會允許來自任何來源的請求，包含您本機的 admin.html
+app.use(cors());
+
 // --- 5. 建立 API ---
 app.get('/', (req, res) => {
   res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
 });
 
-// Webhook 路由，這個路由絕對不能被 express.json() 處理
+// Webhook 路由
 app.post('/webhook', line.middleware(config), (req, res) => {
   if (!connectionString) {
-    console.error('資料庫連線字串未設定！請檢查環境變數 DATABASE_PUBLIC_URL 或 DATABASE_URL。');
+    console.error('資料庫連線字串未設定！');
     return res.status(500).send('Server configuration error');
   }
   Promise
@@ -42,10 +47,7 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
-
-// --- (重要修正) 後台管理用的 API：新增產品 ---
-// 我們將 express.json() 作為這個路由專屬的 middleware
-// 這樣就能確保它只會解析 /admin/products 的請求，完全不會影響到 /webhook
+// 後台管理用的 API
 app.post('/admin/products', express.json(), async (req, res) => {
   try {
     const { name, price, category, description, image_url } = req.body;
@@ -104,7 +106,6 @@ async function handleEvent(event) {
     return client.replyMessage(event.replyToken, reply);
   }
 
-  // 預設的鸚鵡功能
   reply = { type: 'text', text: `你說了：「${userMessage}」` };
   return client.replyMessage(event.replyToken, reply);
 }
