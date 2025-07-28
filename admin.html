@@ -102,6 +102,13 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+        }
+        .section-header > div {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
         }
         .refresh-btn {
             padding: 0.5rem 1rem;
@@ -152,8 +159,11 @@
 
     <div class="container">
         <div class="section-header">
-            <h2>今日訂單列表</h2>
-            <button onclick="loadOrders()" class="refresh-btn">重新整理訂單</button>
+            <h2>訂單列表</h2>
+            <div>
+                <input type="date" id="order-date-filter">
+                <button onclick="loadOrders()" class="refresh-btn">查詢訂單</button>
+            </div>
         </div>
         <table id="order-table">
             <thead>
@@ -163,6 +173,7 @@
                     <th>品項</th>
                     <th>總金額</th>
                     <th>狀態</th>
+                    <th>用餐日期</th>
                     <th>下單時間</th>
                 </tr>
             </thead>
@@ -184,6 +195,7 @@
         const userMessageDiv = document.getElementById('user-message');
         const orderList = document.getElementById('order-list');
         const orderMessageDiv = document.getElementById('order-message');
+        const orderDateFilter = document.getElementById('order-date-filter');
 
         // 新增產品的邏輯
         productForm.addEventListener('submit', async (event) => {
@@ -282,20 +294,27 @@
         // 載入訂單列表
         async function loadOrders() {
             if (!checkBackendUrl()) return;
+            const selectedDate = orderDateFilter.value;
+            if (!selectedDate) {
+                showOrderMessage('請選擇一個日期', 'error');
+                return;
+            }
+
             try {
-                const response = await fetch(`${backendUrl}/admin/orders`);
+                const response = await fetch(`${backendUrl}/admin/orders?date=${selectedDate}`);
                 if (!response.ok) throw new Error('無法取得訂單列表');
                 
                 const orders = await response.json();
                 orderList.innerHTML = '';
 
                 if (orders.length === 0) {
-                    orderList.innerHTML = '<tr><td colspan="6" style="text-align: center;">目前沒有任何訂單。</td></tr>';
+                    orderList.innerHTML = '<tr><td colspan="7" style="text-align: center;">該日期沒有任何訂單。</td></tr>';
                     return;
                 }
 
                 orders.forEach(order => {
                     const tr = document.createElement('tr');
+                    const orderForDate = new Date(order.order_for_date).toLocaleDateString('zh-TW');
                     const orderTime = new Date(order.created_at).toLocaleString('zh-TW', { hour12: false });
                     tr.innerHTML = `
                         <td>${order.id}</td>
@@ -303,6 +322,7 @@
                         <td>${order.items}</td>
                         <td>$${parseFloat(order.total_amount).toFixed(2)}</td>
                         <td>${order.status}</td>
+                        <td>${orderForDate}</td>
                         <td>${orderTime}</td>
                     `;
                     orderList.appendChild(tr);
@@ -342,6 +362,9 @@
 
         // 頁面載入時自動執行
         window.onload = () => {
+            const today = new Date().toLocaleDateString('en-CA');
+            orderDateFilter.value = today;
+            
             loadUsers();
             loadOrders();
         };
