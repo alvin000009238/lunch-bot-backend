@@ -114,6 +114,9 @@
             padding: 0.5rem 1rem;
             font-size: 0.9rem;
         }
+        .menu-item-list { list-style-type: none; padding: 0; margin-top: 1rem; }
+        .menu-item-list li { padding: 0.5rem 0; }
+        .menu-item-list label { font-weight: normal; margin-left: 0.5rem; }
     </style>
 </head>
 <body>
@@ -147,6 +150,20 @@
             <button type="submit" style="width: 100%;">新增品項</button>
         </form>
         <div id="product-message" class="message-box"></div>
+    </div>
+
+    <div class="container">
+        <div class="section-header">
+            <h2>每日菜單設定</h2>
+            <div>
+                <input type="date" id="menu-date-selector">
+                <button onclick="saveDailyMenu()" class="refresh-btn" style="background-color: #28a745;">儲存當日菜單</button>
+            </div>
+        </div>
+        <div id="daily-menu-list">
+            <!-- 菜單項目將由 JavaScript 動態填入 -->
+        </div>
+        <div id="daily-menu-message" class="message-box"></div>
     </div>
 
     <div class="container">
@@ -196,6 +213,9 @@
         const orderList = document.getElementById('order-list');
         const orderMessageDiv = document.getElementById('order-message');
         const orderDateFilter = document.getElementById('order-date-filter');
+        const menuDateSelector = document.getElementById('menu-date-selector');
+        const dailyMenuListDiv = document.getElementById('daily-menu-list');
+        const dailyMenuMessageDiv = document.getElementById('daily-menu-message');
 
         // 新增產品的邏輯
         productForm.addEventListener('submit', async (event) => {
@@ -222,6 +242,7 @@
                 
                 showProductMessage(`產品新增成功！ID: ${result.product.id}`, 'success');
                 productForm.reset();
+                loadDailyMenu(); // 新增產品後重新載入菜單設定
             } catch (error) {
                 showProductMessage(`新增失敗: ${error.message}`, 'error');
             }
@@ -333,6 +354,64 @@
             }
         }
 
+        // 載入每日菜單設定
+        async function loadDailyMenu() {
+            if (!checkBackendUrl()) return;
+            const selectedDate = menuDateSelector.value;
+            if (!selectedDate) return;
+
+            try {
+                const response = await fetch(`${backendUrl}/admin/menu?date=${selectedDate}`);
+                if (!response.ok) throw new Error('無法取得菜單設定');
+                
+                const data = await response.json();
+                dailyMenuListDiv.innerHTML = '';
+                
+                if (data.all_products.length === 0) {
+                    dailyMenuListDiv.innerHTML = '<p>請先新增一些菜單品項。</p>';
+                    return;
+                }
+
+                const list = document.createElement('ul');
+                list.className = 'menu-item-list';
+                data.all_products.forEach(product => {
+                    const li = document.createElement('li');
+                    const isChecked = data.menu_product_ids.includes(product.id);
+                    li.innerHTML = `
+                        <input type="checkbox" id="product-${product.id}" value="${product.id}" ${isChecked ? 'checked' : ''}>
+                        <label for="product-${product.id}">${product.name} - $${product.price}</label>
+                    `;
+                    list.appendChild(li);
+                });
+                dailyMenuListDiv.appendChild(list);
+
+            } catch (error) {
+                showDailyMenuMessage(`載入菜單設定失敗: ${error.message}`, 'error');
+            }
+        }
+
+        // 儲存每日菜單
+        async function saveDailyMenu() {
+            if (!checkBackendUrl()) return;
+            const selectedDate = menuDateSelector.value;
+            const checkboxes = dailyMenuListDiv.querySelectorAll('input[type="checkbox"]:checked');
+            const productIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+
+            try {
+                const response = await fetch(`${backendUrl}/admin/menu`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date: selectedDate, productIds: productIds })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '未知錯誤');
+                showDailyMenuMessage('當日菜單儲存成功！', 'success');
+            } catch (error) {
+                showDailyMenuMessage(`儲存失敗: ${error.message}`, 'error');
+            }
+        }
+
+
         // 檢查後端網址是否設定
         function checkBackendUrl() {
             if (backendUrl.startsWith('請貼上') || !backendUrl) {
@@ -359,15 +438,26 @@
             orderMessageDiv.className = `message-box message-${type}`;
             orderMessageDiv.style.display = 'block';
         }
+        function showDailyMenuMessage(text, type) {
+            dailyMenuMessageDiv.textContent = text;
+            dailyMenuMessageDiv.className = `message-box message-${type}`;
+            dailyMenuMessageDiv.style.display = 'block';
+             setTimeout(() => { dailyMenuMessageDiv.style.display = 'none'; }, 3000);
+        }
 
         // 頁面載入時自動執行
         window.onload = () => {
             const today = new Date().toLocaleDateString('en-CA');
+            menuDateSelector.value = today;
             orderDateFilter.value = today;
             
             loadUsers();
             loadOrders();
+            loadDailyMenu();
         };
+
+        // 當日期選擇器變更時，重新載入每日菜單
+        menuDateSelector.addEventListener('change', loadDailyMenu);
     </script>
 </body>
 </html>

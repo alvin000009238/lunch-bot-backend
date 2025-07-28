@@ -51,8 +51,8 @@ app.post('/admin/products', async (req, res) => {
       return res.status(400).json({ error: '名稱、價格和類別為必填欄位！' });
     }
     const query = `
-      INSERT INTO products (name, price, category, description, image_url, is_available)
-      VALUES ($1, $2, $3, $4, $5, true)
+      INSERT INTO products (name, price, category, description, image_url)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *;
     `;
     const values = [name, price, category, description, image_url];
@@ -140,6 +140,48 @@ app.get('/admin/orders', async (req, res) => {
         res.json(result.rows);
     } catch (error) {
         console.error('取得訂單列表時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+app.get('/admin/menu', async (req, res) => {
+    try {
+        const filterDate = req.query.date;
+        if (!filterDate) {
+            return res.status(400).json({ error: '請提供日期' });
+        }
+        
+        const allProductsResult = await pool.query('SELECT id, name, price FROM products ORDER BY id');
+        const menuResult = await pool.query('SELECT product_ids FROM daily_menus WHERE menu_date = $1', [filterDate]);
+
+        res.json({
+            all_products: allProductsResult.rows,
+            menu_product_ids: menuResult.rows.length > 0 ? menuResult.rows[0].product_ids : []
+        });
+    } catch (error) {
+        console.error('取得每日菜單時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+app.post('/admin/menu', async (req, res) => {
+    try {
+        const { date, productIds } = req.body;
+        if (!date) {
+            return res.status(400).json({ error: '請提供日期' });
+        }
+
+        const query = `
+            INSERT INTO daily_menus (menu_date, product_ids)
+            VALUES ($1, $2)
+            ON CONFLICT (menu_date)
+            DO UPDATE SET product_ids = EXCLUDED.product_ids;
+        `;
+        await pool.query(query, [date, productIds]);
+        res.status(200).json({ message: '每日菜單儲存成功' });
+
+    } catch (error) {
+        console.error('儲存每日菜單時發生錯誤', error);
         res.status(500).json({ error: '伺服器內部錯誤' });
     }
 });
@@ -284,12 +326,23 @@ async function sendMenuFlexMessage(replyToken, forDate) {
     };
 
   try {
-    const result = await pool.query('SELECT * FROM products WHERE is_available = true ORDER BY id');
-    if (result.rows.length === 0) {
-      return client.replyMessage(replyToken, { type: 'text', text: '目前沒有可訂購的餐點喔！' });
+    const menuResult = await pool.query('SELECT product_ids FROM daily_menus WHERE menu_date = $1', [forDate]);
+    
+    if (menuResult.rows.length === 0 || menuResult.rows[0].product_ids.length === 0) {
+      return client.replyMessage(replyToken, { type: 'text', text: `抱歉，${forDate} 沒有提供餐點喔！` });
     }
+    
+    const productIds = menuResult.rows[0].product_ids;
 
-    const bubbles = result.rows.map(product => {
+    const productsResult = await pool.query('SELECT * FROM products WHERE id = ANY($1::int[])', [productIds]);
+    
+    if (productsResult.rows.length === 0) {
+        return client.replyMessage(replyToken, { type: 'text', text: '哎呀，找不到對應的餐點資料。' });
+    }
+    
+    const products = productsResult.rows;
+
+    const bubbles = products.map(product => {
         const actionData = `action=order&productId=${product.id}&date=${forDate}`;
         return {
             type: 'bubble',
