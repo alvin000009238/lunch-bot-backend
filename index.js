@@ -22,16 +22,13 @@ const pool = new Pool({
 const app = express();
 const client = new line.Client(config);
 
-// --- (新增) 使用 express.json() 來解析傳入的 JSON 請求 ---
-// 這對於接收來自後台的資料至關重要
-app.use(express.json());
-
 
 // --- 5. 建立 API ---
 app.get('/', (req, res) => {
   res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
 });
 
+// Webhook 路由必須在任何 body-parser (如 express.json()) 之前
 app.post('/webhook', line.middleware(config), (req, res) => {
   if (!connectionString) {
     console.error('資料庫連線字串未設定！請檢查環境變數 DATABASE_PUBLIC_URL 或 DATABASE_URL。');
@@ -46,18 +43,19 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
-// --- (新增) 後台管理用的 API：新增產品 ---
+// --- (重要修正) 將 express.json() 中間件放在 Webhook 路由之後 ---
+// 這樣它就只會影響到後面定義的 /admin 路由，不會干擾到 /webhook
+app.use(express.json());
+
+// --- 後台管理用的 API：新增產品 ---
 app.post('/admin/products', async (req, res) => {
   try {
-    // 從請求的 body 中取得產品資料
     const { name, price, category, description, image_url } = req.body;
 
-    // 簡單的驗證
     if (!name || !price || !category) {
       return res.status(400).json({ error: '名稱、價格和類別為必填欄位！' });
     }
 
-    // 準備 SQL INSERT 指令
     const query = `
       INSERT INTO products (name, price, category, description, image_url, is_available)
       VALUES ($1, $2, $3, $4, $5, true)
@@ -65,10 +63,8 @@ app.post('/admin/products', async (req, res) => {
     `;
     const values = [name, price, category, description, image_url];
 
-    // 執行查詢
     const result = await pool.query(query, values);
 
-    // 回傳成功訊息和新增的產品資料
     res.status(201).json({ 
       message: '產品新增成功！', 
       product: result.rows[0] 
@@ -90,7 +86,8 @@ async function handleEvent(event) {
   const userMessage = event.message.text;
   let reply = {};
 
-  if (userMessage === '菜單') {
+  // (優化) 現在 Bot 同時聽得懂「菜單」和「訂餐」
+  if (userMessage === '菜單' || userMessage === '訂餐') {
     try {
       const result = await pool.query('SELECT * FROM products WHERE is_available = true ORDER BY id');
       
@@ -110,6 +107,7 @@ async function handleEvent(event) {
     return client.replyMessage(event.replyToken, reply);
   }
 
+  // 預設的鸚鵡功能
   reply = { type: 'text', text: `你說了：「${userMessage}」` };
   return client.replyMessage(event.replyToken, reply);
 }
