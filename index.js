@@ -2,7 +2,7 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
-const cors = require('cors'); // <--- 引入 cors 套件
+const cors = require('cors');
 
 // --- 2. 設定與 LINE Developer 後台相關的密鑰 ---
 const config = {
@@ -23,8 +23,6 @@ const pool = new Pool({
 const app = express();
 const client = new line.Client(config);
 
-// --- (重要修正) 啟用 CORS ---
-// 這會允許來自任何來源的請求，包含您本機的 admin.html
 app.use(cors());
 
 // --- 5. 建立 API ---
@@ -32,7 +30,6 @@ app.get('/', (req, res) => {
   res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
 });
 
-// Webhook 路由
 app.post('/webhook', line.middleware(config), (req, res) => {
   if (!connectionString) {
     console.error('資料庫連線字串未設定！');
@@ -47,29 +44,23 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
-// 後台管理用的 API
 app.post('/admin/products', express.json(), async (req, res) => {
   try {
     const { name, price, category, description, image_url } = req.body;
-
     if (!name || !price || !category) {
       return res.status(400).json({ error: '名稱、價格和類別為必填欄位！' });
     }
-
     const query = `
       INSERT INTO products (name, price, category, description, image_url, is_available)
       VALUES ($1, $2, $3, $4, $5, true)
       RETURNING *;
     `;
     const values = [name, price, category, description, image_url];
-
     const result = await pool.query(query, values);
-
     res.status(201).json({ 
       message: '產品新增成功！', 
       product: result.rows[0] 
     });
-
   } catch (error) {
     console.error('新增產品時發生錯誤', error);
     res.status(500).json({ error: '伺服器內部錯誤' });
@@ -79,6 +70,42 @@ app.post('/admin/products', express.json(), async (req, res) => {
 
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
 async function handleEvent(event) {
+  // --- (新增) 處理加入好友事件 ---
+  if (event.type === 'follow') {
+    const userId = event.source.userId;
+    try {
+      // 檢查使用者是否已存在
+      const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
+      if (userCheck.rows.length > 0) {
+        console.log(`使用者 ${userId} 已存在。`);
+        return Promise.resolve(null); // 已存在，不需處理
+      }
+
+      // 取得使用者 LINE Profile
+      const profile = await client.getProfile(userId);
+      
+      // 將新使用者存入資料庫
+      await pool.query(
+        'INSERT INTO users (line_user_id, display_name) VALUES ($1, $2)',
+        [userId, profile.displayName]
+      );
+
+      console.log(`新使用者 ${profile.displayName} (${userId}) 已註冊。`);
+
+      // 回覆歡迎訊息
+      const welcomeMessage = {
+        type: 'text',
+        text: `歡迎 ${profile.displayName}！您已成功註冊午餐訂餐服務，可以開始使用「菜單」指令囉！`
+      };
+      return client.replyMessage(event.replyToken, welcomeMessage);
+
+    } catch (error) {
+      console.error('處理 follow 事件時發生錯誤', error);
+      return Promise.resolve(null);
+    }
+  }
+
+  // --- 處理訊息事件 ---
   if (event.type !== 'message' || event.message.type !== 'text') {
     return Promise.resolve(null);
   }
