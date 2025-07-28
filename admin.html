@@ -114,15 +114,33 @@
             padding: 0.5rem 1rem;
             font-size: 0.9rem;
         }
-        .menu-item-list { list-style-type: none; padding: 0; margin-top: 1rem; }
+        .menu-item-list { list-style-type: none; padding: 0; margin-top: 1rem; max-height: 300px; overflow-y: auto; border: 1px solid #eee; padding: 1rem; border-radius: 5px;}
         .menu-item-list li { padding: 0.5rem 0; }
         .menu-item-list label { font-weight: normal; margin-left: 0.5rem; }
     </style>
 </head>
 <body>
     <div class="container">
+        <h2>廠商管理</h2>
+        <form id="supplier-form">
+            <div class="form-group">
+                <label for="supplier-name">廠商名稱</label>
+                <input type="text" id="supplier-name" required>
+            </div>
+            <button type="submit" style="width:100%">新增廠商</button>
+        </form>
+        <div id="supplier-message" class="message-box"></div>
+    </div>
+
+    <div class="container">
         <h1>新增菜單品項</h1>
         <form id="product-form">
+            <div class="form-group">
+                <label for="product-supplier">歸屬廠商 (必填)</label>
+                <select id="product-supplier" name="supplier_id" required>
+                    <!-- 廠商選項將由 JS 動態載入 -->
+                </select>
+            </div>
             <div class="form-group">
                 <label for="name">品項名稱 (必填)</label>
                 <input type="text" id="name" name="name" required>
@@ -156,21 +174,18 @@
         <div class="section-header">
             <h2>每日菜單設定</h2>
             <div>
+                <select id="menu-supplier-selector" style="width: 150px; padding: 0.75rem;"></select>
                 <input type="date" id="menu-date-selector">
                 <button onclick="saveDailyMenu()" class="refresh-btn" style="background-color: #28a745;">儲存當日菜單</button>
             </div>
         </div>
-        <div id="daily-menu-list">
-            <!-- 菜單項目將由 JavaScript 動態填入 -->
-        </div>
+        <div id="daily-menu-list"></div>
         <div id="daily-menu-message" class="message-box"></div>
     </div>
 
     <div class="container">
         <h2>使用者管理與儲值</h2>
-        <ul id="user-list">
-            <!-- 使用者列表將由 JavaScript 動態填入 -->
-        </ul>
+        <ul id="user-list"></ul>
         <div id="user-message" class="message-box"></div>
     </div>
 
@@ -185,51 +200,114 @@
         <table id="order-table">
             <thead>
                 <tr>
-                    <th>訂單ID</th>
+                    <th>ID</th>
                     <th>訂購人</th>
                     <th>品項</th>
-                    <th>總金額</th>
+                    <th>金額</th>
                     <th>狀態</th>
-                    <th>用餐日期</th>
+                    <th>用餐日</th>
                     <th>下單時間</th>
                 </tr>
             </thead>
-            <tbody id="order-list">
-                <!-- 訂單將由 JavaScript 動態填入 -->
-            </tbody>
+            <tbody id="order-list"></tbody>
         </table>
         <div id="order-message" class="message-box"></div>
     </div>
 
     <script>
-        // =================================================================
         const backendUrl = 'https://lunch-bot-backend-production.up.railway.app';
-        // =================================================================
-
+        
+        const supplierForm = document.getElementById('supplier-form');
+        const supplierMessageDiv = document.getElementById('supplier-message');
         const productForm = document.getElementById('product-form');
         const productMessageDiv = document.getElementById('product-message');
+        const productSupplierSelect = document.getElementById('product-supplier');
+        const menuSupplierSelector = document.getElementById('menu-supplier-selector');
+        const menuDateSelector = document.getElementById('menu-date-selector');
+        const dailyMenuListDiv = document.getElementById('daily-menu-list');
+        const dailyMenuMessageDiv = document.getElementById('daily-menu-message');
         const userList = document.getElementById('user-list');
         const userMessageDiv = document.getElementById('user-message');
         const orderList = document.getElementById('order-list');
         const orderMessageDiv = document.getElementById('order-message');
         const orderDateFilter = document.getElementById('order-date-filter');
-        const menuDateSelector = document.getElementById('menu-date-selector');
-        const dailyMenuListDiv = document.getElementById('daily-menu-list');
-        const dailyMenuMessageDiv = document.getElementById('daily-menu-message');
 
-        // 新增產品的邏輯
+        function checkBackendUrl() {
+            if (backendUrl.startsWith('請貼上') || !backendUrl) {
+                alert('請先在 admin.html 檔案中設定您的後端網址！');
+                return false;
+            }
+            return true;
+        }
+
+        function showMessage(element, text, type) {
+            element.textContent = text;
+            element.className = `message-box message-${type}`;
+            element.style.display = 'block';
+            if (type === 'success') {
+                setTimeout(() => { element.style.display = 'none'; }, 3000);
+            }
+        }
+
+        async function loadSuppliers() {
+            if (!checkBackendUrl()) return;
+            try {
+                const response = await fetch(`${backendUrl}/admin/suppliers`);
+                if (!response.ok) throw new Error('無法取得廠商列表');
+                const suppliers = await response.json();
+
+                productSupplierSelect.innerHTML = '<option value="">請選擇廠商</option>';
+                menuSupplierSelector.innerHTML = '<option value="">選擇廠商</option>';
+
+                suppliers.forEach(s => {
+                    const option = `<option value="${s.id}">${s.name}</option>`;
+                    productSupplierSelect.innerHTML += option;
+                    menuSupplierSelector.innerHTML += option;
+                });
+            } catch (error) {
+                console.error(error);
+                showMessage(supplierMessageDiv, `載入廠商失敗: ${error.message}`, 'error');
+            }
+        }
+
+        supplierForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (!checkBackendUrl()) return;
+            const name = document.getElementById('supplier-name').value;
+            try {
+                const response = await fetch(`${backendUrl}/admin/suppliers`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '未知錯誤');
+                
+                showMessage(supplierMessageDiv, '新增廠商成功！', 'success');
+                await loadSuppliers();
+                supplierForm.reset();
+            } catch (error) {
+                showMessage(supplierMessageDiv, `新增廠商失敗: ${error.message}`, 'error');
+            }
+        });
+
         productForm.addEventListener('submit', async (event) => {
             event.preventDefault();
             if (!checkBackendUrl()) return;
-
             const formData = new FormData(productForm);
             const productData = {
                 name: formData.get('name'),
                 price: parseFloat(formData.get('price')),
                 category: formData.get('category'),
                 description: formData.get('description'),
-                image_url: formData.get('image_url')
+                image_url: formData.get('image_url'),
+                supplier_id: parseInt(formData.get('supplier_id'))
             };
+
+            if (!productData.supplier_id) {
+                showMessage(productMessageDiv, '請選擇歸屬廠商', 'error');
+                return;
+            }
 
             try {
                 const response = await fetch(`${backendUrl}/admin/products`, {
@@ -240,135 +318,32 @@
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || '未知錯誤');
                 
-                showProductMessage(`產品新增成功！ID: ${result.product.id}`, 'success');
+                showMessage(productMessageDiv, `產品新增成功！`, 'success');
                 productForm.reset();
-                loadDailyMenu(); // 新增產品後重新載入菜單設定
+                await loadDailyMenu();
             } catch (error) {
-                showProductMessage(`新增失敗: ${error.message}`, 'error');
+                showMessage(productMessageDiv, `新增失敗: ${error.message}`, 'error');
             }
         });
 
-        // 載入使用者列表
-        async function loadUsers() {
-            if (!checkBackendUrl()) return;
-            try {
-                const response = await fetch(`${backendUrl}/admin/users`);
-                if (!response.ok) throw new Error('無法取得使用者列表');
-                
-                const users = await response.json();
-                userList.innerHTML = ''; 
-
-                if (users.length === 0) {
-                    userList.innerHTML = '<li>目前沒有已註冊的使用者。</li>';
-                    return;
-                }
-
-                users.forEach(user => {
-                    const li = document.createElement('li');
-                    li.innerHTML = `
-                        <div class="user-info">
-                            <strong>${user.display_name}</strong> (ID: ${user.id})<br>
-                            餘額: $<span id="balance-${user.id}">${parseFloat(user.balance).toFixed(2)}</span>
-                        </div>
-                        <div class="user-deposit">
-                            <input type="number" placeholder="金額" id="amount-${user.id}" min="1">
-                            <button onclick="deposit(${user.id})">儲值</button>
-                        </div>
-                    `;
-                    userList.appendChild(li);
-                });
-
-            } catch (error) {
-                showUserMessage(`載入使用者失敗: ${error.message}`, 'error');
-            }
-        }
-
-        // 處理儲值動作
-        async function deposit(userId) {
-            if (!checkBackendUrl()) return;
-            const amountInput = document.getElementById(`amount-${userId}`);
-            const amount = parseFloat(amountInput.value);
-
-            if (!amount || amount <= 0) {
-                showUserMessage('請輸入有效的儲值金額', 'error');
-                return;
-            }
-
-            try {
-                const response = await fetch(`${backendUrl}/admin/users/${userId}/deposit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ amount })
-                });
-
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.error || '未知錯誤');
-                
-                showUserMessage(`為 ${result.user.display_name} 儲值成功！`, 'success');
-                document.getElementById(`balance-${userId}`).textContent = parseFloat(result.user.balance).toFixed(2);
-                amountInput.value = '';
-            } catch (error) {
-                showUserMessage(`儲值失敗: ${error.message}`, 'error');
-            }
-        }
-
-        // 載入訂單列表
-        async function loadOrders() {
-            if (!checkBackendUrl()) return;
-            const selectedDate = orderDateFilter.value;
-            if (!selectedDate) {
-                showOrderMessage('請選擇一個日期', 'error');
-                return;
-            }
-
-            try {
-                const response = await fetch(`${backendUrl}/admin/orders?date=${selectedDate}`);
-                if (!response.ok) throw new Error('無法取得訂單列表');
-                
-                const orders = await response.json();
-                orderList.innerHTML = '';
-
-                if (orders.length === 0) {
-                    orderList.innerHTML = '<tr><td colspan="7" style="text-align: center;">該日期沒有任何訂單。</td></tr>';
-                    return;
-                }
-
-                orders.forEach(order => {
-                    const tr = document.createElement('tr');
-                    const orderForDate = new Date(order.order_for_date).toLocaleDateString('zh-TW');
-                    const orderTime = new Date(order.created_at).toLocaleString('zh-TW', { hour12: false });
-                    tr.innerHTML = `
-                        <td>${order.id}</td>
-                        <td>${order.display_name}</td>
-                        <td>${order.items}</td>
-                        <td>$${parseFloat(order.total_amount).toFixed(2)}</td>
-                        <td>${order.status}</td>
-                        <td>${orderForDate}</td>
-                        <td>${orderTime}</td>
-                    `;
-                    orderList.appendChild(tr);
-                });
-
-            } catch (error) {
-                showOrderMessage(`載入訂單失敗: ${error.message}`, 'error');
-            }
-        }
-
-        // 載入每日菜單設定
         async function loadDailyMenu() {
             if (!checkBackendUrl()) return;
             const selectedDate = menuDateSelector.value;
-            if (!selectedDate) return;
+            const selectedSupplierId = menuSupplierSelector.value;
+            if (!selectedDate || !selectedSupplierId) {
+                dailyMenuListDiv.innerHTML = '';
+                return;
+            };
 
             try {
-                const response = await fetch(`${backendUrl}/admin/menu?date=${selectedDate}`);
+                const response = await fetch(`${backendUrl}/admin/menu?date=${selectedDate}&supplierId=${selectedSupplierId}`);
                 if (!response.ok) throw new Error('無法取得菜單設定');
                 
                 const data = await response.json();
                 dailyMenuListDiv.innerHTML = '';
                 
                 if (data.all_products.length === 0) {
-                    dailyMenuListDiv.innerHTML = '<p>請先新增一些菜單品項。</p>';
+                    dailyMenuListDiv.innerHTML = '<p>該廠商目前沒有任何菜單品項。</p>';
                     return;
                 }
 
@@ -386,14 +361,18 @@
                 dailyMenuListDiv.appendChild(list);
 
             } catch (error) {
-                showDailyMenuMessage(`載入菜單設定失敗: ${error.message}`, 'error');
+                showMessage(dailyMenuMessageDiv, `載入菜單設定失敗: ${error.message}`, 'error');
             }
         }
 
-        // 儲存每日菜單
         async function saveDailyMenu() {
             if (!checkBackendUrl()) return;
             const selectedDate = menuDateSelector.value;
+            const selectedSupplierId = menuSupplierSelector.value;
+            if (!selectedDate || !selectedSupplierId) {
+                showMessage(dailyMenuMessageDiv, '請先選擇廠商和日期', 'error');
+                return;
+            }
             const checkboxes = dailyMenuListDiv.querySelectorAll('input[type="checkbox"]:checked');
             const productIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
 
@@ -401,62 +380,118 @@
                 const response = await fetch(`${backendUrl}/admin/menu`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ date: selectedDate, productIds: productIds })
+                    body: JSON.stringify({ date: selectedDate, supplierId: parseInt(selectedSupplierId), productIds: productIds })
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || '未知錯誤');
-                showDailyMenuMessage('當日菜單儲存成功！', 'success');
+                showMessage(dailyMenuMessageDiv, '當日菜單儲存成功！', 'success');
             } catch (error) {
-                showDailyMenuMessage(`儲存失敗: ${error.message}`, 'error');
+                showMessage(dailyMenuMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
 
-
-        // 檢查後端網址是否設定
-        function checkBackendUrl() {
-            if (backendUrl.startsWith('請貼上') || !backendUrl) {
-                alert('請先在 admin.html 檔案中設定您的後端網址！');
-                return false;
+        async function loadUsers() {
+            if (!checkBackendUrl()) return;
+            try {
+                const response = await fetch(`${backendUrl}/admin/users`);
+                if (!response.ok) throw new Error('無法取得使用者列表');
+                const users = await response.json();
+                userList.innerHTML = ''; 
+                if (users.length === 0) {
+                    userList.innerHTML = '<li>目前沒有已註冊的使用者。</li>';
+                    return;
+                }
+                users.forEach(user => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <div class="user-info">
+                            <strong>${user.display_name}</strong> (ID: ${user.id})<br>
+                            餘額: $<span id="balance-${user.id}">${parseFloat(user.balance).toFixed(2)}</span>
+                        </div>
+                        <div class="user-deposit">
+                            <input type="number" placeholder="金額" id="amount-${user.id}" min="1">
+                            <button onclick="deposit(${user.id})">儲值</button>
+                        </div>
+                    `;
+                    userList.appendChild(li);
+                });
+            } catch (error) {
+                showMessage(userMessageDiv, `載入使用者失敗: ${error.message}`, 'error');
             }
-            return true;
-        }
-        
-        // 顯示訊息的輔助函式
-        function showProductMessage(text, type) {
-            productMessageDiv.textContent = text;
-            productMessageDiv.className = `message-box message-${type}`;
-            productMessageDiv.style.display = 'block';
-        }
-        function showUserMessage(text, type) {
-            userMessageDiv.textContent = text;
-            userMessageDiv.className = `message-box message-${type}`;
-            userMessageDiv.style.display = 'block';
-            setTimeout(() => { userMessageDiv.style.display = 'none'; }, 3000);
-        }
-        function showOrderMessage(text, type) {
-            orderMessageDiv.textContent = text;
-            orderMessageDiv.className = `message-box message-${type}`;
-            orderMessageDiv.style.display = 'block';
-        }
-        function showDailyMenuMessage(text, type) {
-            dailyMenuMessageDiv.textContent = text;
-            dailyMenuMessageDiv.className = `message-box message-${type}`;
-            dailyMenuMessageDiv.style.display = 'block';
-             setTimeout(() => { dailyMenuMessageDiv.style.display = 'none'; }, 3000);
         }
 
-        // 頁面載入時自動執行
+        async function deposit(userId) {
+            if (!checkBackendUrl()) return;
+            const amountInput = document.getElementById(`amount-${userId}`);
+            const amount = parseFloat(amountInput.value);
+            if (!amount || amount <= 0) {
+                showMessage(userMessageDiv, '請輸入有效的儲值金額', 'error');
+                return;
+            }
+            try {
+                const response = await fetch(`${backendUrl}/admin/users/${userId}/deposit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '未知錯誤');
+                showMessage(userMessageDiv, `為 ${result.user.display_name} 儲值成功！`, 'success');
+                document.getElementById(`balance-${userId}`).textContent = parseFloat(result.user.balance).toFixed(2);
+                amountInput.value = '';
+            } catch (error) {
+                showMessage(userMessageDiv, `儲值失敗: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadOrders() {
+            if (!checkBackendUrl()) return;
+            const selectedDate = orderDateFilter.value;
+            if (!selectedDate) {
+                showMessage(orderMessageDiv, '請選擇一個日期', 'error');
+                return;
+            }
+            try {
+                const response = await fetch(`${backendUrl}/admin/orders?date=${selectedDate}`);
+                if (!response.ok) throw new Error('無法取得訂單列表');
+                const orders = await response.json();
+                orderList.innerHTML = '';
+                if (orders.length === 0) {
+                    orderList.innerHTML = '<tr><td colspan="7" style="text-align: center;">該日期沒有任何訂單。</td></tr>';
+                    return;
+                }
+                orders.forEach(order => {
+                    const tr = document.createElement('tr');
+                    const orderForDate = new Date(order.order_for_date).toLocaleDateString('zh-TW');
+                    const orderTime = new Date(order.created_at).toLocaleString('zh-TW', { hour12: false });
+                    tr.innerHTML = `
+                        <td>${order.id}</td>
+                        <td>${order.display_name}</td>
+                        <td>${order.items}</td>
+                        <td>$${parseFloat(order.total_amount).toFixed(2)}</td>
+                        <td>${order.status}</td>
+                        <td>${orderForDate}</td>
+                        <td>${orderTime}</td>
+                    `;
+                    orderList.appendChild(tr);
+                });
+            } catch (error) {
+                showMessage(orderMessageDiv, `載入訂單失敗: ${error.message}`, 'error');
+            }
+        }
+
         window.onload = () => {
             const today = new Date().toLocaleDateString('en-CA');
             menuDateSelector.value = today;
             orderDateFilter.value = today;
             
+            loadSuppliers();
             loadUsers();
             loadOrders();
             loadDailyMenu();
         };
 
-        // 當日期選擇器變更時，重新載入每日菜單
+        menuSupplierSelector.addEventListener('change', loadDailyMenu);
         menuDateSelector.addEventListener('change', loadDailyMenu);
     </script>
 </body>
