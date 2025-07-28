@@ -1,7 +1,7 @@
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
-const { Pool } = require('pg'); // <--- 新增 pg 套件
+const { Pool } = require('pg');
 
 // --- 2. 設定與 LINE Developer 後台相關的密鑰 ---
 const config = {
@@ -9,12 +9,14 @@ const config = {
   channelSecret: process.env.CHANNEL_SECRET
 };
 
-// --- 3. 設定資料庫連線 ---
-// Railway 會自動提供 DATABASE_URL 這個環境變數
+// --- 3. 設定資料庫連線 (更新) ---
+// 優先使用 DATABASE_PUBLIC_URL，如果不存在，則使用 DATABASE_URL
+// 這讓我們的程式更有彈性，能適應不同平台的命名
+const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: connectionString,
   ssl: {
-    rejectUnauthorized: false // 在開發和一些雲端平台上需要這個設定
+    rejectUnauthorized: false
   }
 });
 
@@ -28,6 +30,12 @@ app.get('/', (req, res) => {
 });
 
 app.post('/webhook', line.middleware(config), (req, res) => {
+  // 檢查是否有連線字串，若無則回報錯誤
+  if (!connectionString) {
+    console.error('資料庫連線字串未設定！請檢查環境變數 DATABASE_PUBLIC_URL 或 DATABASE_URL。');
+    return res.status(500).send('Server configuration error');
+  }
+
   Promise
     .all(req.body.events.map(handleEvent))
     .then((result) => res.json(result))
@@ -44,18 +52,15 @@ async function handleEvent(event) {
   }
 
   const userMessage = event.message.text;
-  let reply = {}; // 準備要回覆的訊息物件
+  let reply = {};
 
-  // --- 新功能：處理「菜單」指令 ---
   if (userMessage === '菜單') {
     try {
-      // 從資料庫查詢所有 "is_available" 為 true 的商品
       const result = await pool.query('SELECT * FROM products WHERE is_available = true');
       
       if (result.rows.length === 0) {
         reply = { type: 'text', text: '目前沒有可訂購的餐點喔！' };
       } else {
-        // 格式化菜單訊息
         let menuText = '--- 今日菜單 ---\n\n';
         result.rows.forEach(product => {
           menuText += `${product.name} - $${product.price}\n`;
@@ -69,7 +74,6 @@ async function handleEvent(event) {
     return client.replyMessage(event.replyToken, reply);
   }
 
-  // 預設的鸚鵡功能
   reply = { type: 'text', text: `你說了：「${userMessage}」` };
   return client.replyMessage(event.replyToken, reply);
 }
