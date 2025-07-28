@@ -56,7 +56,7 @@
         button:hover {
             background-color: #0056b3;
         }
-        #message {
+        .message-box {
             margin-top: 1.5rem;
             padding: 1rem;
             border-radius: 5px;
@@ -90,7 +90,6 @@
     <div class="container">
         <h1>新增菜單品項</h1>
         <form id="product-form">
-            <!-- ... 新增菜單的表單內容維持不變 ... -->
             <div class="form-group">
                 <label for="name">品項名稱 (必填)</label>
                 <input type="text" id="name" name="name" required>
@@ -117,7 +116,7 @@
             </div>
             <button type="submit" style="width: 100%;">新增品項</button>
         </form>
-        <div id="message"></div>
+        <div id="product-message" class="message-box"></div>
     </div>
 
     <div class="container">
@@ -125,26 +124,54 @@
         <ul id="user-list">
             <!-- 使用者列表將由 JavaScript 動態填入 -->
         </ul>
-        <div id="user-message"></div>
+        <div id="user-message" class="message-box"></div>
     </div>
 
     <script>
         // =================================================================
-        const backendUrl = 'https://lunch-bot-backend-production.up.railway.app'; // 請貼上您在 Railway 上的後端網址
+        // == 請在這裡填入您在 Railway 上的後端網址
+        // =================================================================
+        // 例如: 'https://lunch-bot-backend-production-1234.up.railway.app'
+        // 注意：網址最後不要有斜線 "/"
+        const backendUrl = 'https://lunch-bot-backend-production.up.railway.app';
         // =================================================================
 
         const productForm = document.getElementById('product-form');
-        const messageDiv = document.getElementById('message');
+        const productMessageDiv = document.getElementById('product-message');
         const userList = document.getElementById('user-list');
         const userMessageDiv = document.getElementById('user-message');
 
-        // 新增產品的邏輯 (不變)
+        // 新增產品的邏輯
         productForm.addEventListener('submit', async (event) => {
             event.preventDefault();
-            // ... 省略與之前相同的程式碼 ...
+            if (!checkBackendUrl()) return;
+
+            const formData = new FormData(productForm);
+            const productData = {
+                name: formData.get('name'),
+                price: parseFloat(formData.get('price')),
+                category: formData.get('category'),
+                description: formData.get('description'),
+                image_url: formData.get('image_url')
+            };
+
+            try {
+                const response = await fetch(`${backendUrl}/admin/products`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(productData)
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '未知錯誤');
+                
+                showProductMessage(`產品新增成功！ID: ${result.product.id}`, 'success');
+                productForm.reset();
+            } catch (error) {
+                showProductMessage(`新增失敗: ${error.message}`, 'error');
+            }
         });
 
-        // (新增) 載入使用者列表
+        // 載入使用者列表
         async function loadUsers() {
             if (!checkBackendUrl()) return;
             try {
@@ -152,7 +179,7 @@
                 if (!response.ok) throw new Error('無法取得使用者列表');
                 
                 const users = await response.json();
-                userList.innerHTML = ''; // 清空舊列表
+                userList.innerHTML = ''; 
 
                 if (users.length === 0) {
                     userList.innerHTML = '<li>目前沒有已註冊的使用者。</li>';
@@ -179,7 +206,7 @@
             }
         }
 
-        // (新增) 處理儲值動作
+        // 處理儲值動作
         async function deposit(userId) {
             if (!checkBackendUrl()) return;
             const amountInput = document.getElementById(`amount-${userId}`);
@@ -198,15 +225,11 @@
                 });
 
                 const result = await response.json();
-
-                if (response.ok) {
-                    showUserMessage(`為 ${result.user.display_name} 儲值成功！`, 'success');
-                    // 更新頁面上的餘額
-                    document.getElementById(`balance-${userId}`).textContent = parseFloat(result.user.balance).toFixed(2);
-                    amountInput.value = ''; // 清空輸入框
-                } else {
-                    throw new Error(result.error || '未知錯誤');
-                }
+                if (!response.ok) throw new Error(result.error || '未知錯誤');
+                
+                showUserMessage(`為 ${result.user.display_name} 儲值成功！`, 'success');
+                document.getElementById(`balance-${userId}`).textContent = parseFloat(result.user.balance).toFixed(2);
+                amountInput.value = '';
             } catch (error) {
                 showUserMessage(`儲值失敗: ${error.message}`, 'error');
             }
@@ -214,18 +237,22 @@
 
         // 檢查後端網址是否設定
         function checkBackendUrl() {
-            if (backendUrl === '請貼上您在 Railway 上的後端網址' || !backendUrl) {
-                showMessage('請先在 admin.html 檔案中設定您的後端網址！', 'error');
+            if (backendUrl.startsWith('請貼上') || !backendUrl) {
+                alert('請先在 admin.html 檔案中設定您的後端網址！');
                 return false;
             }
             return true;
         }
         
         // 顯示訊息的輔助函式
-        function showMessage(text, type) { /* ... 省略 ... */ }
+        function showProductMessage(text, type) {
+            productMessageDiv.textContent = text;
+            productMessageDiv.className = `message-box message-${type}`;
+            productMessageDiv.style.display = 'block';
+        }
         function showUserMessage(text, type) {
             userMessageDiv.textContent = text;
-            userMessageDiv.className = type === 'success' ? 'message-success' : 'message-error';
+            userMessageDiv.className = `message-box message-${type}`;
             userMessageDiv.style.display = 'block';
             setTimeout(() => { userMessageDiv.style.display = 'none'; }, 3000);
         }
