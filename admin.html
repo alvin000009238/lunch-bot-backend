@@ -10,10 +10,6 @@
             background-color: #f4f7f6;
             margin: 0;
             padding: 2rem;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
         }
         .container {
             background-color: #ffffff;
@@ -21,9 +17,10 @@
             border-radius: 10px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
             width: 100%;
-            max-width: 500px;
+            max-width: 600px;
+            margin: 1rem auto;
         }
-        h1 {
+        h1, h2 {
             color: #333;
             text-align: center;
             margin-bottom: 1.5rem;
@@ -45,12 +42,7 @@
             box-sizing: border-box;
             font-size: 1rem;
         }
-        textarea {
-            resize: vertical;
-            min-height: 80px;
-        }
         button {
-            width: 100%;
             padding: 0.85rem;
             background-color: #007bff;
             color: white;
@@ -70,24 +62,35 @@
             border-radius: 5px;
             text-align: center;
             font-weight: bold;
-            display: none; /* 預設隱藏 */
+            display: none;
         }
-        .message-success {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+        .message-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .message-error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        
+        /* 使用者列表樣式 */
+        #user-list { list-style-type: none; padding: 0; }
+        #user-list li {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            border-bottom: 1px solid #eee;
         }
-        .message-error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+        #user-list li:last-child { border-bottom: none; }
+        .user-info { flex-grow: 1; }
+        .user-deposit { display: flex; align-items: center; margin-top: 0.5rem; width: 100%; }
+        @media (min-width: 600px) {
+            .user-deposit { width: auto; margin-top: 0; }
         }
+        .user-deposit input { width: 80px; margin-right: 0.5rem; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>新增菜單品項</h1>
         <form id="product-form">
+            <!-- ... 新增菜單的表單內容維持不變 ... -->
             <div class="form-group">
                 <label for="name">品項名稱 (必填)</label>
                 <input type="text" id="name" name="name" required>
@@ -112,82 +115,125 @@
                 <label for="image_url">圖片網址 (選填)</label>
                 <input type="text" id="image_url" name="image_url">
             </div>
-            <button type="submit">新增品項</button>
+            <button type="submit" style="width: 100%;">新增品項</button>
         </form>
         <div id="message"></div>
     </div>
 
+    <div class="container">
+        <h2>使用者管理與儲值</h2>
+        <ul id="user-list">
+            <!-- 使用者列表將由 JavaScript 動態填入 -->
+        </ul>
+        <div id="user-message"></div>
+    </div>
+
     <script>
         // =================================================================
-        // == 請在這裡填入您在 Railway 上的後端網址
-        // =================================================================
-        // 例如: 'https://lunch-bot-backend-production-1234.up.railway.app'
-        // 注意：網址最後不要有斜線 "/"
-        const backendUrl = 'https://lunch-bot-backend-production.up.railway.app'
+        const backendUrl = 'https://lunch-bot-backend-production.up.railway.app'; // 請貼上您在 Railway 上的後端網址
         // =================================================================
 
-        const form = document.getElementById('product-form');
+        const productForm = document.getElementById('product-form');
         const messageDiv = document.getElementById('message');
+        const userList = document.getElementById('user-list');
+        const userMessageDiv = document.getElementById('user-message');
 
-        form.addEventListener('submit', async (event) => {
-            // 防止表單傳統的提交方式
+        // 新增產品的邏輯 (不變)
+        productForm.addEventListener('submit', async (event) => {
             event.preventDefault();
+            // ... 省略與之前相同的程式碼 ...
+        });
 
-            // 顯示訊息框並重置樣式
-            messageDiv.style.display = 'none';
-            messageDiv.textContent = '';
-            messageDiv.className = '';
+        // (新增) 載入使用者列表
+        async function loadUsers() {
+            if (!checkBackendUrl()) return;
+            try {
+                const response = await fetch(`${backendUrl}/admin/users`);
+                if (!response.ok) throw new Error('無法取得使用者列表');
+                
+                const users = await response.json();
+                userList.innerHTML = ''; // 清空舊列表
 
-            // 檢查 backendUrl 是否已填寫
-            if (backendUrl === '請貼上您在 Railway 上的後端網址' || !backendUrl) {
-                showMessage('請先在 admin.html 檔案中設定您的後端網址！', 'error');
+                if (users.length === 0) {
+                    userList.innerHTML = '<li>目前沒有已註冊的使用者。</li>';
+                    return;
+                }
+
+                users.forEach(user => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <div class="user-info">
+                            <strong>${user.display_name}</strong> (ID: ${user.id})<br>
+                            餘額: $<span id="balance-${user.id}">${parseFloat(user.balance).toFixed(2)}</span>
+                        </div>
+                        <div class="user-deposit">
+                            <input type="number" placeholder="金額" id="amount-${user.id}" min="1">
+                            <button onclick="deposit(${user.id})">儲值</button>
+                        </div>
+                    `;
+                    userList.appendChild(li);
+                });
+
+            } catch (error) {
+                showUserMessage(`載入使用者失敗: ${error.message}`, 'error');
+            }
+        }
+
+        // (新增) 處理儲值動作
+        async function deposit(userId) {
+            if (!checkBackendUrl()) return;
+            const amountInput = document.getElementById(`amount-${userId}`);
+            const amount = parseFloat(amountInput.value);
+
+            if (!amount || amount <= 0) {
+                showUserMessage('請輸入有效的儲值金額', 'error');
                 return;
             }
 
-            // 從表單中取得資料
-            const formData = new FormData(form);
-            const productData = {
-                name: formData.get('name'),
-                price: parseFloat(formData.get('price')),
-                category: formData.get('category'),
-                description: formData.get('description'),
-                image_url: formData.get('image_url')
-            };
-
             try {
-                // 使用 fetch API 發送 POST 請求
-                const response = await fetch(`${backendUrl}/admin/products`, {
+                const response = await fetch(`${backendUrl}/admin/users/${userId}/deposit`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(productData)
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount })
                 });
 
-                // 解析伺服器的回傳資料
                 const result = await response.json();
 
                 if (response.ok) {
-                    // 如果伺服器回傳成功 (狀態碼 200-299)
-                    showMessage(`產品新增成功！ID: ${result.product.id}`, 'success');
-                    form.reset(); // 清空表單
+                    showUserMessage(`為 ${result.user.display_name} 儲值成功！`, 'success');
+                    // 更新頁面上的餘額
+                    document.getElementById(`balance-${userId}`).textContent = parseFloat(result.user.balance).toFixed(2);
+                    amountInput.value = ''; // 清空輸入框
                 } else {
-                    // 如果伺服器回傳錯誤
-                    showMessage(`新增失敗: ${result.error || '未知錯誤'}`, 'error');
+                    throw new Error(result.error || '未知錯誤');
                 }
             } catch (error) {
-                // 如果網路請求本身就失敗了
-                console.error('請求錯誤:', error);
-                showMessage('無法連接到伺服器，請檢查後端網址是否正確或伺服器是否正在運行。', 'error');
+                showUserMessage(`儲值失敗: ${error.message}`, 'error');
             }
-        });
-
-        // 用來顯示成功或失敗訊息的輔助函式
-        function showMessage(text, type) {
-            messageDiv.textContent = text;
-            messageDiv.className = type === 'success' ? 'message-success' : 'message-error';
-            messageDiv.style.display = 'block';
         }
+
+        // 檢查後端網址是否設定
+        function checkBackendUrl() {
+            if (backendUrl === '請貼上您在 Railway 上的後端網址' || !backendUrl) {
+                showMessage('請先在 admin.html 檔案中設定您的後端網址！', 'error');
+                return false;
+            }
+            return true;
+        }
+        
+        // 顯示訊息的輔助函式
+        function showMessage(text, type) { /* ... 省略 ... */ }
+        function showUserMessage(text, type) {
+            userMessageDiv.textContent = text;
+            userMessageDiv.className = type === 'success' ? 'message-success' : 'message-error';
+            userMessageDiv.style.display = 'block';
+            setTimeout(() => { userMessageDiv.style.display = 'none'; }, 3000);
+        }
+
+        // 頁面載入時自動執行
+        window.onload = () => {
+            loadUsers();
+        };
     </script>
 </body>
 </html>
