@@ -316,7 +316,7 @@ async function handleOrderAction(userId, productId, orderForDate, replyToken) {
 
 async function sendMenuFlexMessage(replyToken, forDate) {
     const cleanUrl = (url) => {
-        const fallbackUrl = '[https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image](https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image)';
+        const fallbackUrl = 'https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image';
         if (!url) return fallbackUrl;
         const markdownMatch = url.match(/\((https?:\/\/[^\s)]+)\)/);
         if (markdownMatch && markdownMatch[1]) return markdownMatch[1];
