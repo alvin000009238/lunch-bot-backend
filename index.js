@@ -22,13 +22,12 @@ const pool = new Pool({
 const app = express();
 const client = new line.Client(config);
 
-
 // --- 5. 建立 API ---
 app.get('/', (req, res) => {
   res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
 });
 
-// Webhook 路由必須在任何 body-parser (如 express.json()) 之前
+// Webhook 路由，這個路由絕對不能被 express.json() 處理
 app.post('/webhook', line.middleware(config), (req, res) => {
   if (!connectionString) {
     console.error('資料庫連線字串未設定！請檢查環境變數 DATABASE_PUBLIC_URL 或 DATABASE_URL。');
@@ -43,12 +42,11 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
-// --- (重要修正) 將 express.json() 中間件放在 Webhook 路由之後 ---
-// 這樣它就只會影響到後面定義的 /admin 路由，不會干擾到 /webhook
-app.use(express.json());
 
-// --- 後台管理用的 API：新增產品 ---
-app.post('/admin/products', async (req, res) => {
+// --- (重要修正) 後台管理用的 API：新增產品 ---
+// 我們將 express.json() 作為這個路由專屬的 middleware
+// 這樣就能確保它只會解析 /admin/products 的請求，完全不會影響到 /webhook
+app.post('/admin/products', express.json(), async (req, res) => {
   try {
     const { name, price, category, description, image_url } = req.body;
 
@@ -86,7 +84,6 @@ async function handleEvent(event) {
   const userMessage = event.message.text;
   let reply = {};
 
-  // (優化) 現在 Bot 同時聽得懂「菜單」和「訂餐」
   if (userMessage === '菜單' || userMessage === '訂餐') {
     try {
       const result = await pool.query('SELECT * FROM products WHERE is_available = true ORDER BY id');
