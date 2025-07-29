@@ -238,6 +238,7 @@ async function handleEvent(event) {
         if (action === 'select_date') return sendMenuFlexMessage(event.replyToken, data.get('date'));
         if (action === 'order') return handleOrderAction(userId, parseInt(data.get('menuItemId')), data.get('isCombo') === 'true', null, event.replyToken);
         if (action === 'select_drink') return handleOrderAction(userId, parseInt(data.get('menuItemId')), true, data.get('drink'), event.replyToken);
+        if (action === 'cancel_select_date') return showOrdersByDate(userId, data.get('date'), event.replyToken);
         if (action === 'cancel_order') {
             const orderId = parseInt(data.get('orderId'));
             console.log('準備取消訂單 ID:', orderId);
@@ -391,7 +392,7 @@ async function askForDrink(replyToken, menuItemId) {
     return client.replyMessage(replyToken, flexMessage);
 }
 
-// 修正後的取消訂單函式
+// 修改後的取消訂單函式 - 先選擇日期
 async function askToCancelOrder(userId, replyToken) {
     try {
         console.log('開始處理取消訂單請求，用戶ID:', userId);
@@ -407,91 +408,72 @@ async function askToCancelOrder(userId, replyToken) {
         const dbUserId = userResult.rows[0].id;
         console.log('資料庫用戶ID:', dbUserId);
 
-        // 修正 SQL 查詢，增加更多調試資訊
+        // 查詢用戶有哪些日期有可取消的訂單
         const query = `
             SELECT 
-                o.id, 
-                o.order_for_date, 
-                o.total_amount,
-                o.status,
-                STRING_AGG(
-                    oi.item_name || 
-                    CASE 
-                        WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' 
-                        ELSE '' 
-                    END, ', '
-                ) as items
+                o.order_for_date,
+                COUNT(*) as order_count,
+                SUM(o.total_amount) as total_amount
             FROM orders o 
-            JOIN order_items oi ON o.id = oi.order_id 
             WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date >= $2 
-            GROUP BY o.id, o.order_for_date, o.total_amount, o.status
-            ORDER BY o.order_for_date, o.id;
+            GROUP BY o.order_for_date
+            ORDER BY o.order_for_date
+            LIMIT 5;
         `;
         
-        const orders = await pool.query(query, [dbUserId, today]);
-        console.log('找到的訂單數量:', orders.rows.length);
-        console.log('訂單詳情:', orders.rows);
+        const orderDates = await pool.query(query, [dbUserId, today]);
+        console.log('找到的有訂單的日期數量:', orderDates.rows.length);
+        console.log('日期詳情:', orderDates.rows);
         
-        if (orders.rows.length === 0) {
-            // 檢查是否有任何訂單（不論狀態）
-            const allOrdersQuery = `
-                SELECT o.id, o.status, o.order_for_date 
-                FROM orders o 
-                WHERE o.user_id = $1 AND o.order_for_date >= $2
-                ORDER BY o.order_for_date DESC;
-            `;
-            const allOrders = await pool.query(allOrdersQuery, [dbUserId, today]);
-            console.log('用戶所有訂單:', allOrders.rows);
-            
+        if (orderDates.rows.length === 0) {
             return client.replyMessage(replyToken, { 
                 type: 'text', 
                 text: '您目前沒有可以取消的訂單。\n（只有狀態為「準備中」的訂單可以取消）' 
             });
         }
 
-        // 限制按鈕數量，避免 LINE 的限制
-        const maxButtons = 4; // LINE Flex Message 最多支援 5 個按鈕
-        const ordersToShow = orders.rows.slice(0, maxButtons);
-        
-        const buttons = ordersToShow.map(order => {
-            const dateLabel = new Date(order.order_for_date).toLocaleDateString('zh-TW');
-            const buttonText = `${dateLabel} - ${order.items} (${parseFloat(order.total_amount).toFixed(0)})`;
+        // 創建日期選擇按鈕
+        const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+        const buttons = orderDates.rows.map(dateRow => {
+            const date = new Date(dateRow.order_for_date);
+            const dayOfWeek = weekdays[date.getDay()];
+            const dateString = date.toLocaleDateString('en-CA');
+            const displayDate = date.toLocaleDateString('zh-TW');
             
-            // 確保按鈕文字不超過 LINE 的限制（最多 40 字元）
-            const truncatedText = buttonText.length > 35 ? buttonText.substring(0, 32) + '...' : buttonText;
+            let label;
+            if (dateString === today) {
+                label = `今天 (${dayOfWeek})`;
+            } else {
+                const tomorrow = new Date(today);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                if (dateString === tomorrow.toLocaleDateString('en-CA')) {
+                    label = `明天 (${dayOfWeek})`;
+                } else {
+                    label = `${displayDate} (${dayOfWeek})`;
+                }
+            }
+            
+            const orderCount = parseInt(dateRow.order_count);
+            const totalAmount = parseFloat(dateRow.total_amount).toFixed(0);
+            const buttonText = `${label} - ${orderCount}筆訂單 (${totalAmount}元)`;
             
             return {
                 type: 'button', 
-                style: 'danger', 
+                style: 'secondary', 
                 height: 'sm', 
                 margin: 'sm',
                 action: { 
                     type: 'postback', 
-                    label: `取消: ${truncatedText}`, 
-                    data: `action=cancel_order&orderId=${order.id}`, 
-                    displayText: `我要取消 ${dateLabel} 的訂單` 
+                    label: buttonText, 
+                    data: `action=cancel_select_date&date=${dateString}`, 
+                    displayText: `我要查看 ${label} 的訂單` 
                 }
-            }
+            };
         });
-
-        // 如果有更多訂單，添加提示
-        if (orders.rows.length > maxButtons) {
-            buttons.push({
-                type: 'button',
-                style: 'secondary',
-                height: 'sm',
-                margin: 'sm',
-                action: {
-                    type: 'message',
-                    label: '查看更多訂單',
-                    text: '取消'
-                }
-            });
-        }
 
         const flexMessage = { 
             type: 'flex', 
-            altText: '選擇要取消的訂單', 
+            altText: '選擇要取消訂單的日期', 
             contents: { 
                 type: 'bubble', 
                 body: { 
@@ -500,7 +482,7 @@ async function askToCancelOrder(userId, replyToken) {
                     contents: [
                         { 
                             type: 'text', 
-                            text: '請選擇您要取消的訂單', 
+                            text: '請選擇要取消訂單的日期', 
                             weight: 'bold', 
                             size: 'lg' 
                         },
@@ -524,10 +506,153 @@ async function askToCancelOrder(userId, replyToken) {
         
         return client.replyMessage(replyToken, flexMessage);
     } catch (error) {
-        console.error('查詢可取消訂單時發生錯誤', error);
+        console.error('查詢可取消訂單日期時發生錯誤', error);
         return client.replyMessage(replyToken, { 
             type: 'text', 
             text: '查詢訂單失敗，請稍後再試。\n錯誤詳情已記錄，請聯絡管理員。' 
+        });
+    }
+}
+
+// 新增函式：顯示特定日期的訂單
+async function showOrdersByDate(userId, selectedDate, replyToken) {
+    try {
+        console.log('顯示特定日期的訂單，用戶ID:', userId, '日期:', selectedDate);
+        
+        const userResult = await pool.query('SELECT id FROM users WHERE line_user_id = $1', [userId]);
+        if (userResult.rows.length === 0) {
+            return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
+        }
+        const dbUserId = userResult.rows[0].id;
+
+        // 檢查時間限制
+        const now = new Date();
+        const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+        const orderDate = new Date(selectedDate);
+        
+        if (orderDate.toDateString() === taipeiNow.toDateString() && taipeiNow.getHours() >= DEADLINE_HOUR) {
+            return client.replyMessage(replyToken, { 
+                type: 'text', 
+                text: `已超過當日訂單的取消時間（上午${DEADLINE_HOUR}點截止）` 
+            });
+        }
+
+        // 查詢該日期的訂單
+        const query = `
+            SELECT 
+                o.id, 
+                o.total_amount,
+                o.created_at,
+                STRING_AGG(
+                    oi.item_name || 
+                    CASE 
+                        WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' 
+                        ELSE '' 
+                    END, ', '
+                ) as items
+            FROM orders o 
+            JOIN order_items oi ON o.id = oi.order_id 
+            WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date = $2 
+            GROUP BY o.id, o.total_amount, o.created_at
+            ORDER BY o.created_at
+            LIMIT 5;
+        `;
+        
+        const orders = await pool.query(query, [dbUserId, selectedDate]);
+        console.log('找到的訂單數量:', orders.rows.length);
+        
+        if (orders.rows.length === 0) {
+            return client.replyMessage(replyToken, { 
+                type: 'text', 
+                text: '該日期沒有可以取消的訂單。' 
+            });
+        }
+
+        // 創建訂單選擇按鈕
+        const buttons = orders.rows.map((order, index) => {
+            const orderTime = new Date(order.created_at).toLocaleTimeString('zh-TW', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            const amount = parseFloat(order.total_amount).toFixed(0);
+            
+            // 限制顯示的商品名稱長度
+            let items = order.items;
+            if (items.length > 20) {
+                items = items.substring(0, 17) + '...';
+            }
+            
+            const buttonText = `${orderTime} - ${items} (${amount}元)`;
+            
+            return {
+                type: 'button', 
+                style: 'danger', 
+                height: 'sm', 
+                margin: 'sm',
+                action: { 
+                    type: 'postback', 
+                    label: `取消: ${buttonText}`, 
+                    data: `action=cancel_order&orderId=${order.id}`, 
+                    displayText: `我要取消 ${orderTime} 的訂單` 
+                }
+            };
+        });
+
+        // 添加返回按鈕
+        buttons.push({
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            margin: 'md',
+            action: {
+                type: 'message',
+                label: '⬅️ 返回日期選擇',
+                text: '取消'
+            }
+        });
+
+        const dateDisplay = new Date(selectedDate).toLocaleDateString('zh-TW');
+        const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+        const dayOfWeek = weekdays[new Date(selectedDate).getDay()];
+
+        const flexMessage = { 
+            type: 'flex', 
+            altText: '選擇要取消的訂單', 
+            contents: { 
+                type: 'bubble', 
+                body: { 
+                    type: 'box', 
+                    layout: 'vertical', 
+                    contents: [
+                        { 
+                            type: 'text', 
+                            text: `${dateDisplay} (${dayOfWeek})`, 
+                            weight: 'bold', 
+                            size: 'lg' 
+                        },
+                        {
+                            type: 'text',
+                            text: '請選擇要取消的訂單',
+                            size: 'md',
+                            margin: 'sm'
+                        }
+                    ] 
+                }, 
+                footer: { 
+                    type: 'box', 
+                    layout: 'vertical', 
+                    spacing: 'sm', 
+                    contents: buttons 
+                } 
+            } 
+        };
+        
+        return client.replyMessage(replyToken, flexMessage);
+    } catch (error) {
+        console.error('顯示特定日期訂單時發生錯誤', error);
+        return client.replyMessage(replyToken, { 
+            type: 'text', 
+            text: '查詢訂單失敗，請稍後再試。' 
         });
     }
 }
