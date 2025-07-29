@@ -30,6 +30,8 @@ const config = {
   channelSecret: process.env.CHANNEL_SECRET
 };
 console.log(">>> [DEBUG] LINE config created. Access Token Present:", !!config.channelAccessToken);
+console.log(">>> [DEBUG] LINE config created. Secret Present:", !!config.channelSecret);
+
 
 const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 console.log(">>> [DEBUG] DB Connection String Present:", !!connectionString);
@@ -49,12 +51,19 @@ const DRINKS = ['紅茶', '綠茶', '鮮奶茶'];
 const app = express();
 console.log(">>> [DEBUG] Express app created.");
 
-const client = new line.Client(config);
-console.log(">>> [DEBUG] LINE client created.");
+let client;
+try {
+    client = new line.Client(config);
+    console.log(">>> [DEBUG] LINE client created successfully.");
+} catch (error) {
+    console.error("CRITICAL: Failed to create LINE client.", error);
+    process.exit(1);
+}
 
 // --- 5. 建立 API ---
 app.get('/', (req, res) => {
-  res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
+  console.log(">>> [LOG] Health check request received at '/'");
+  res.status(200).send('Server is healthy and running!');
 });
 
 // Webhook 路由必須在任何 body-parser (如 express.json()) 之前
@@ -73,7 +82,7 @@ app.use(cors());
 app.use(express.json());
 console.log(">>> [DEBUG] Middlewares (cors, json) attached.");
 
-// --- 後台管理 API ---
+// --- 後台管理 API (省略，維持不變) ---
 app.get('/admin/daily-menu', async (req, res) => {
     try {
         const { date } = req.query;
@@ -209,6 +218,7 @@ console.log(">>> [DEBUG] Helper functions defined.");
 
 // --- 8. 啟動伺服器 ---
 const port = process.env.PORT || 3000;
+console.log(`>>> [DEBUG] Preparing to listen on port ${port}...`);
 app.listen(port, () => {
   console.log(`伺服器正在 http://localhost:${port} 上成功運行`);
 });
