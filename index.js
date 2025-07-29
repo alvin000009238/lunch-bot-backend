@@ -1,3 +1,9 @@
+/*
+ * =================================================================
+ * == 檔案: index.js (最終完整版)
+ * =================================================================
+ * 整合了每日限定菜單、自動結算、取消訂單、賒帳等所有功能。
+ */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -297,8 +303,34 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
     }
 }
 
-async function handleCheckBalance(userId, replyToken) { /* ... */ }
-async function askForDate(replyToken) { /* ... */ }
+async function handleCheckBalance(userId, replyToken) {
+    try {
+        const result = await pool.query('SELECT balance FROM users WHERE line_user_id = $1', [userId]);
+        if (result.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料，請嘗試重新加入好友。' });
+        const balance = parseFloat(result.rows[0].balance).toFixed(0);
+        return client.replyMessage(replyToken, { type: 'text', text: `您目前的餘額為: $${balance}` });
+    } catch (error) {
+        console.error('查詢餘額時發生錯誤', error);
+        return client.replyMessage(replyToken, { type: 'text', text: '查詢餘額失敗，請稍後再試。' });
+    }
+}
+
+async function askForDate(replyToken) {
+    const days = [];
+    const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+    for (let i = 0; i < 5; i++) {
+        const date = new Date();
+        const taipeiTime = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+        taipeiTime.setDate(taipeiTime.getDate() + i);
+        
+        const dateString = taipeiTime.toLocaleDateString('en-CA');
+        const dayOfWeek = weekdays[taipeiTime.getDay()];
+        let label = (i === 0) ? `今天 (${dayOfWeek})` : (i === 1) ? `明天 (${dayOfWeek})` : `${taipeiTime.getMonth() + 1}/${taipeiTime.getDate()} (${dayOfWeek})`;
+        days.push({ type: 'button', style: 'primary', height: 'sm', margin: 'sm', action: { type: 'postback', label: label, data: `action=select_date&date=${dateString}`, displayText: `我想訂 ${label} 的餐點` } });
+    }
+    const flexMessage = { type: 'flex', altText: '選擇訂餐日期', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: [{ type: 'text', text: '您想訂哪一天的餐點？', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: days } } };
+    return client.replyMessage(replyToken, flexMessage);
+}
 
 async function sendMenuFlexMessage(replyToken, forDate) {
     try {
@@ -309,7 +341,8 @@ async function sendMenuFlexMessage(replyToken, forDate) {
             const displayId = item.is_combo_eligible ? `套餐 ${item.display_order - 8}` : `單點 ${item.display_order}`;
             const footerButtons = [];
             if (item.is_combo_eligible) {
-                footerButtons.push({ type: 'button', style: 'secondary', height: 'sm', action: { type: 'postback', label: `僅單點 ($${parseFloat(item.price) - COMBO_PRICE})`, data: `action=order&menuItemId=${item.id}&isCombo=false`, displayText: `我只要單點一份${item.name}` } });
+                const singlePrice = parseFloat(item.price) - COMBO_PRICE;
+                footerButtons.push({ type: 'button', style: 'secondary', height: 'sm', action: { type: 'postback', label: `僅單點 ($${singlePrice})`, data: `action=order&menuItemId=${item.id}&isCombo=false`, displayText: `我只要單點一份${item.name}` } });
                 footerButtons.push({ type: 'button', style: 'primary', height: 'sm', margin: 'sm', action: { type: 'postback', label: `升級套餐 ($${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=true`, displayText: `我要一份${item.name}套餐` } });
             } else {
                 footerButtons.push({ type: 'button', style: 'primary', height: 'sm', action: { type: 'postback', label: `確認單點 ($${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=false`, displayText: `我要一份${item.name}` } });
@@ -337,7 +370,7 @@ async function askForDrink(replyToken, menuItemId) {
 
 async function askToCancelOrder(userId, replyToken) {
     try {
-        const today = new Date().toLocaleDateString('en-CA');
+        const today = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).toLocaleDateString('en-CA');
         const userResult = await pool.query('SELECT id FROM users WHERE line_user_id = $1', [userId]);
         if (userResult.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
         const dbUserId = userResult.rows[0].id;
@@ -345,10 +378,13 @@ async function askToCancelOrder(userId, replyToken) {
         const orders = await pool.query("SELECT o.id, o.order_for_date, oi.item_name FROM orders o JOIN order_items oi ON o.id = oi.order_id WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date >= $2 ORDER BY o.order_for_date", [dbUserId, today]);
         if (orders.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '您目前沒有可以取消的訂單。' });
 
-        const buttons = orders.rows.map(order => ({
-            type: 'button', style: 'danger', height: 'sm', margin: 'sm',
-            action: { type: 'postback', label: `取消 ${new Date(order.order_for_date).toLocaleDateString('zh-TW')} 的 ${order.item_name}`, data: `action=cancel_order&orderId=${order.id}`, displayText: `我要取消訂單 ${order.id}` }
-        }));
+        const buttons = orders.rows.map(order => {
+            const dateLabel = new Date(order.order_for_date).toLocaleDateString('zh-TW');
+            return {
+                type: 'button', style: 'danger', height: 'sm', margin: 'sm',
+                action: { type: 'postback', label: `取消 ${dateLabel} 的 ${order.item_name}`, data: `action=cancel_order&orderId=${order.id}`, displayText: `我要取消訂單 ${order.id}` }
+            }
+        });
         const flexMessage = { type: 'flex', altText: '選擇要取消的訂單', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '請選擇您要取消的訂單', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons } } };
         return client.replyMessage(replyToken, flexMessage);
     } catch (error) {

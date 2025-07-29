@@ -1,3 +1,6 @@
+<!-- ================================================================= -->
+<!-- == 檔案: admin.html (增加 Enter 鍵切換功能)                  == -->
+<!-- ================================================================= -->
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -252,7 +255,7 @@
                 document.getElementById(`balance-${userId}`).textContent = parseFloat(result.user.balance).toFixed(2);
                 amountInput.value = '';
             } catch (error) {
-                showMessage(userMessageDiv, `儲值失敗: ${error.message}`, 'error');
+                showMessage(userMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
         
@@ -292,18 +295,23 @@
             }
         }
         
-        document.addEventListener('keydown', function(event) {
+        // (新增) Enter 鍵切換功能
+        dailyMenuForm.addEventListener('keydown', function(event) {
             if (event.key === 'Enter') {
                 const activeElement = document.activeElement;
                 if (activeElement.tagName === 'INPUT' || activeElement.tagName === 'SELECT') {
-                    event.preventDefault();
+                    event.preventDefault(); // 防止 Enter 鍵觸發預設行為 (例如提交表單)
+                    
+                    // 找出表單中所有可以互動的元素
                     const formElements = Array.from(dailyMenuForm.querySelectorAll('input, select'));
                     const currentIndex = formElements.indexOf(activeElement);
                     const nextElement = formElements[currentIndex + 1];
+                    
                     if (nextElement) {
-                        nextElement.focus();
+                        nextElement.focus(); // 如果有下一個元素，就將焦點移過去
                     } else {
-                         saveDailyMenu(); // 最後一格按 Enter 直接儲存
+                         // 如果是最後一個元素，可以選擇性地觸發儲存按鈕
+                         // document.querySelector('.refresh-btn[style*="background-color: #28a745"]').click();
                     }
                 }
             }
