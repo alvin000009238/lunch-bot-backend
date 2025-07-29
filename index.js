@@ -2,9 +2,22 @@
  * =================================================================
  * == 檔案: index.js (最終修正版)
  * =================================================================
- * 修正了 express.json() 的順序，確保它在 webhook 路由之後被調用，
- * 從而徹底解決 TypeError 的問題。
+ * 在最上方加入了全域錯誤捕獲，以偵測可能導致健康檢查失敗的隱藏錯誤。
  */
+// --- (新增) 全域錯誤捕獲 ---
+// 這會抓住任何未被處理的非同步錯誤 (例如，資料庫連線失敗)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1); // 強制結束程式，讓錯誤在日誌中變得明顯
+});
+
+// 這會抓住任何未被處理的同步錯誤
+process.on('uncaughtException', (err, origin) => {
+  console.error(`CRITICAL: Caught exception: ${err}\n` + `Exception origin: ${origin}`);
+  process.exit(1);
+});
+
+
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -34,7 +47,7 @@ app.get('/', (req, res) => {
   res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
 });
 
-// --- (重要修正) Webhook 路由必須在任何 body-parser (如 express.json()) 之前 ---
+// --- Webhook 路由必須在任何 body-parser (如 express.json()) 之前 ---
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise
     .all(req.body.events.map(handleEvent))
