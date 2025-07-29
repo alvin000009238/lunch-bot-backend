@@ -1,3 +1,11 @@
+/*
+ * =================================================================
+ * == 檔案: index.js (最終修正版)
+ * =================================================================
+ * 徹底修正了 sendMenuFlexMessage 函式中 cleanUrl 的備用網址，
+ * 解決了因圖片網址格式錯誤導致的 400 Bad Request 問題。
+ * 並確保了 Webhook 的 middleware 順序正確。
+ */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -295,12 +303,23 @@ async function askForSupplier(replyToken, forDate) {
 }
 async function sendMenuFlexMessage(replyToken, forDate, supplierId) {
     const cleanUrl = (url) => {
-        const fallbackUrl = '[https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image](https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image)';
+        // (徹底修正) 確保備用網址是正確的字串格式
+        const fallbackUrl = 'https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image';
         if (!url) return fallbackUrl;
+        
+        // 嘗試從 Markdown 格式 [text](url) 中提取 URL
         const markdownMatch = url.match(/\((https?:\/\/[^\s)]+)\)/);
-        if (markdownMatch && markdownMatch[1]) return markdownMatch[1];
+        if (markdownMatch && markdownMatch[1]) {
+            return markdownMatch[1];
+        }
+
+        // 嘗試直接匹配 URL
         const plainMatch = url.match(/https?:\/\/[^\s)]+/);
-        if (plainMatch) return plainMatch[0];
+        if (plainMatch) {
+            return plainMatch[0];
+        }
+
+        // 如果都找不到，回傳預設圖片
         return fallbackUrl;
     };
     try {
