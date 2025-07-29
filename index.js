@@ -4,6 +4,7 @@
  * =================================================================
  * 整合了每日限定菜單、自動結算、取消訂單、賒帳等所有功能。
  * (修正了 askToCancelOrder 函式中的 SQL 查詢邏輯)
+ * (加固了 cleanUrl 函式以解決 400 錯誤)
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -334,6 +335,15 @@ async function askForDate(replyToken) {
 }
 
 async function sendMenuFlexMessage(replyToken, forDate) {
+    const cleanUrl = (url) => {
+        const fallbackUrl = 'https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image';
+        if (!url) return fallbackUrl;
+        const markdownMatch = url.match(/\((https?:\/\/[^\s)]+)\)/);
+        if (markdownMatch && markdownMatch[1]) return markdownMatch[1];
+        const plainMatch = url.match(/https?:\/\/[^\s)]+/);
+        if (plainMatch) return plainMatch[0];
+        return fallbackUrl;
+    };
     try {
         const menuItems = await pool.query('SELECT * FROM menu_items WHERE menu_date = $1 ORDER BY display_order', [forDate]);
         if (menuItems.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: `抱歉，${forDate} 尚未提供菜單。` });
@@ -349,14 +359,15 @@ async function sendMenuFlexMessage(replyToken, forDate) {
                 footerButtons.push({ type: 'button', style: 'primary', height: 'sm', action: { type: 'postback', label: `確認單點 ($${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=false`, displayText: `我要一份${item.name}` } });
             }
 
-            return { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [ { type: 'text', text: `${displayId} ${item.name}`, weight: 'bold', size: 'xl' } ] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: footerButtons } };
+            return { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [ { type: 'text', text: `${displayId} ${item.name}`, weight: 'bold', size: 'xl' }, { type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm', contents: [ { type: 'box', layout: 'baseline', spacing: 'sm', contents: [ { type: 'text', text: '價格', color: '#aaaaaa', size: 'sm', flex: 1 }, { type: 'text', text: `$${item.price}`, wrap: true, color: '#666666', size: 'sm', flex: 5 } ] } ] } ] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: footerButtons } };
         });
 
         const flexMessage = { type: 'flex', altText: '這是今日菜單', contents: { type: 'carousel', contents: bubbles } };
         return client.replyMessage(replyToken, flexMessage);
     } catch (error) {
-        console.error('查詢菜單時發生錯誤', error);
-        return client.replyMessage(replyToken, { type: 'text', text: '哎呀，查詢菜單失敗了。' });
+        console.error('查詢菜單時發生嚴重錯誤:', error);
+        if (error.originalError && error.originalError.response) console.error('--- LINE API 錯誤回應 (偵錯用) ---\n', JSON.stringify(error.originalError.response.data, null, 2));
+        return client.replyMessage(replyToken, { type: 'text', text: '哎呀，查詢菜單失敗了，請回報管理員查看日誌！' });
     }
 }
 
@@ -369,7 +380,6 @@ async function askForDrink(replyToken, menuItemId) {
     return client.replyMessage(replyToken, flexMessage);
 }
 
-// (重要修正)
 async function askToCancelOrder(userId, replyToken) {
     try {
         const today = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).toLocaleDateString('en-CA');
@@ -377,7 +387,6 @@ async function askToCancelOrder(userId, replyToken) {
         if (userResult.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
         const dbUserId = userResult.rows[0].id;
 
-        // 使用更穩健的 SQL 查詢，確保每個訂單只出現一次
         const query = `
             SELECT 
                 o.id, 
