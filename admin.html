@@ -244,9 +244,7 @@
             element.textContent = text;
             element.className = `message-box message-${type}`;
             element.style.display = 'block';
-            if (type === 'success') {
-                setTimeout(() => { element.style.display = 'none'; }, 3000);
-            }
+            setTimeout(() => { element.style.display = 'none'; }, 3000);
         }
 
         async function loadSuppliers() {

@@ -1,60 +1,33 @@
-/*
- * =================================================================
- * == 檔案: index.js (最終修正版)
- * =================================================================
- * 在最上方加入了全域錯誤捕獲和詳細的啟動日誌，
- * 以偵測可能導致健康檢查失敗的隱藏錯誤。
- */
-// --- (新增) 全域錯誤捕獲 ---
-console.log(">>> [DEBUG] Script starting...");
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
-});
-process.on('uncaughtException', (err, origin) => {
-  console.error(`CRITICAL: Caught exception: ${err}\n` + `Exception origin: ${origin}`);
-  process.exit(1);
-});
-console.log(">>> [DEBUG] Global error handlers attached.");
-
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
 const cors = require('cors');
-console.log(">>> [DEBUG] Modules imported.");
 
 // --- 2. 設定 ---
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
 };
-console.log(">>> [DEBUG] LINE config created. Access Token Present:", !!config.channelAccessToken);
-
 const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
-console.log(">>> [DEBUG] DB Connection String Present:", !!connectionString);
-
 const pool = new Pool({
   connectionString: connectionString,
   ssl: {
     rejectUnauthorized: false
   }
 });
-console.log(">>> [DEBUG] Database pool created.");
 const DEADLINE_HOUR = 9;
 
 // --- 4. 建立 Express 伺服器和 LINE Bot 用戶端 ---
 const app = express();
-console.log(">>> [DEBUG] Express app created.");
-
 const client = new line.Client(config);
-console.log(">>> [DEBUG] LINE client created.");
 
 // --- 5. 建立 API ---
 app.get('/', (req, res) => {
   res.send('伺服器已啟動！LINE Bot 後端服務運行中。');
 });
 
+// Webhook 路由必須在任何 body-parser (如 express.json()) 之前
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise
     .all(req.body.events.map(handleEvent))
@@ -65,9 +38,9 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
+// 在 Webhook 之後，為所有後續的 /admin 路由啟用 cors 和 json 解析
 app.use(cors());
 app.use(express.json());
-console.log(">>> [DEBUG] Middlewares (cors, json) attached.");
 
 // --- 後台管理 API ---
 app.get('/admin/suppliers', async (req, res) => {
@@ -213,7 +186,6 @@ app.post('/admin/menu', async (req, res) => {
         res.status(500).json({ error: '伺服器內部錯誤' });
     }
 });
-console.log(">>> [DEBUG] Admin API routes defined.");
 
 
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
@@ -323,7 +295,7 @@ async function askForSupplier(replyToken, forDate) {
 }
 async function sendMenuFlexMessage(replyToken, forDate, supplierId) {
     const cleanUrl = (url) => {
-        const fallbackUrl = 'https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image';
+        const fallbackUrl = '[https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image](https://placehold.co/600x400/EFEFEF/AAAAAA?text=No+Image)';
         if (!url) return fallbackUrl;
         const markdownMatch = url.match(/\((https?:\/\/[^\s)]+)\)/);
         if (markdownMatch && markdownMatch[1]) return markdownMatch[1];
@@ -350,7 +322,6 @@ async function sendMenuFlexMessage(replyToken, forDate, supplierId) {
         return client.replyMessage(replyToken, { type: 'text', text: '哎呀，查詢菜單失敗了，請回報管理員查看日誌！' });
     }
 }
-console.log(">>> [DEBUG] Helper functions defined.");
 
 // --- 8. 啟動伺服器 ---
 const port = process.env.PORT || 3000;
