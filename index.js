@@ -3,6 +3,7 @@
  * == 檔案: index.js (最終完整版)
  * =================================================================
  * 整合了每日限定菜單、自動結算、取消訂單、賒帳等所有功能。
+ * (修正了 askToCancelOrder 函式中的 SQL 查詢邏輯)
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -368,6 +369,7 @@ async function askForDrink(replyToken, menuItemId) {
     return client.replyMessage(replyToken, flexMessage);
 }
 
+// (重要修正)
 async function askToCancelOrder(userId, replyToken) {
     try {
         const today = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).toLocaleDateString('en-CA');
@@ -375,14 +377,27 @@ async function askToCancelOrder(userId, replyToken) {
         if (userResult.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
         const dbUserId = userResult.rows[0].id;
 
-        const orders = await pool.query("SELECT o.id, o.order_for_date, oi.item_name FROM orders o JOIN order_items oi ON o.id = oi.order_id WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date >= $2 ORDER BY o.order_for_date", [dbUserId, today]);
+        // 使用更穩健的 SQL 查詢，確保每個訂單只出現一次
+        const query = `
+            SELECT 
+                o.id, 
+                o.order_for_date, 
+                STRING_AGG(oi.item_name, ', ') as items
+            FROM orders o 
+            JOIN order_items oi ON o.id = oi.order_id 
+            WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date >= $2 
+            GROUP BY o.id, o.order_for_date
+            ORDER BY o.order_for_date, o.id;
+        `;
+        const orders = await pool.query(query, [dbUserId, today]);
+        
         if (orders.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '您目前沒有可以取消的訂單。' });
 
         const buttons = orders.rows.map(order => {
             const dateLabel = new Date(order.order_for_date).toLocaleDateString('zh-TW');
             return {
                 type: 'button', style: 'danger', height: 'sm', margin: 'sm',
-                action: { type: 'postback', label: `取消 ${dateLabel} 的 ${order.item_name}`, data: `action=cancel_order&orderId=${order.id}`, displayText: `我要取消訂單 ${order.id}` }
+                action: { type: 'postback', label: `取消 ${dateLabel} 的 ${order.items}`, data: `action=cancel_order&orderId=${order.id}`, displayText: `我要取消訂單 ${order.id}` }
             }
         });
         const flexMessage = { type: 'flex', altText: '選擇要取消的訂單', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '請選擇您要取消的訂單', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons } } };
