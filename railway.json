@@ -6,12 +6,6 @@
   "deploy": {
     "startCommand": "npm start",
     "healthcheckPath": "/",
-    "healthcheckTimeout": 100,
-    "cron": [
-      {
-        "schedule": "*/5 * * * *",
-        "command": "curl -s -X POST https://${RAILWAY_PUBLIC_DOMAIN}/api/cron-test"
-      }
-    ]
+    "healthcheckTimeout": 100
   }
 }

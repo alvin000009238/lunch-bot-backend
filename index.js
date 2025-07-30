@@ -1,20 +1,25 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，加入排程測試 API)
+ * == 檔案: index.js (最終版，使用內建排程 node-cron)
  * =================================================================
+ * 1. 引入 node-cron 套件，建立內建排程器。
+ * 2. 排程器每分鐘檢查一次，時間一到就自動執行結算。
+ * 3. 移除對外部 cron 和 SETTLEMENT_SECRET 的依賴。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
 const cors = require('cors');
+const cron = require('node-cron'); // (新增) 引入 node-cron
 
 // --- 2. 設定 ---
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
 };
-const SETTLEMENT_SECRET = process.env.SETTLEMENT_SECRET;
+// 不再需要 SETTLEMENT_SECRET
+// const SETTLEMENT_SECRET = process.env.SETTLEMENT_SECRET; 
 
 const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 const pool = new Pool({
@@ -32,13 +37,6 @@ const client = new line.Client(config);
 
 // --- 5. 建立 API ---
 app.get('/', (req, res) => { res.send('伺服器已啟動！'); });
-
-// (新增) 排程測試專用 API
-app.post('/api/cron-test', (req, res) => {
-  console.log(`[排程測試] Cron job 測試成功！收到請求於 ${new Date().toISOString()}`);
-  res.status(200).send('Cron test endpoint is alive.');
-});
-
 
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent)).then((result) => res.json(result)).catch((err) => {
@@ -61,6 +59,100 @@ async function getSetting(key, defaultValue) {
     } catch (error) {
         console.warn(`無法從資料庫取得設定 '${key}'，使用預設值: ${defaultValue}. 錯誤: ${error.message}`);
         return defaultValue;
+    }
+}
+
+// (新增) 將結算邏輯獨立成一個函式
+async function runDailySettlement() {
+    const now = new Date();
+    const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const settlementDate = taipeiNow.toLocaleDateString('en-CA');
+
+    const dbClient = await pool.connect();
+    try {
+        await dbClient.query('BEGIN');
+
+        // 1. 檢查今天是否已經結算過
+        const check = await dbClient.query('SELECT * FROM daily_settlements WHERE settlement_date = $1', [settlementDate]);
+        if (check.rows.length > 0) {
+            await dbClient.query('ROLLBACK');
+            // 這則日誌現在只會在應用程式重啟時，於已結算過的日期出現，屬於正常現象
+            console.log(`[排程檢查] 日期 ${settlementDate} 已結算過，跳過。`);
+            return;
+        }
+
+        // 2. 取得截止時間並判斷是否已到點
+        const deadlineTime = await getSetting('deadline_time', '09:00');
+        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
+        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
+
+        if (!isPastDeadline) {
+            await dbClient.query('ROLLBACK');
+            // 這則日誌不會頻繁出現，只會在排程啟動初期出現
+            console.log(`[排程檢查] 時間未到 (現在 ${taipeiNow.getHours()}:${taipeiNow.getMinutes()} / 截止 ${deadlineTime})，跳過。`);
+            return;
+        }
+        
+        // 3. 執行結算流程
+        console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
+
+        const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
+        const cancelledUserIds = new Set();
+        if (negativeUsers.rows.length > 0) {
+            const userIds = negativeUsers.rows.map(u => u.id);
+            const ordersToCancel = await dbClient.query('SELECT id, user_id, total_amount FROM orders WHERE order_for_date = $1 AND user_id = ANY($2::int[]) AND status = $3', [settlementDate, userIds, 'preparing']);
+            for (const order of ordersToCancel.rows) {
+                await dbClient.query('UPDATE orders SET status = $1 WHERE id = $2', ['cancelled_by_system', order.id]);
+                await dbClient.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [order.total_amount, order.user_id]);
+                await dbClient.query('INSERT INTO transactions (user_id, type, amount, related_order_id) VALUES ($1, $2, $3, $4)', [order.user_id, 'refund', order.total_amount, order.id]);
+                cancelledUserIds.add(order.user_id);
+            }
+        }
+        
+        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
+        for (const order of successOrders.rows) {
+            const message = `訂餐成功！\n您今天訂購了：${order.items}\n您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
+            await client.pushMessage(order.line_user_id, { type: 'text', text: message });
+        }
+        for (const userId of cancelledUserIds) {
+            const user = await dbClient.query('SELECT line_user_id FROM users WHERE id = $1', [userId]);
+            if(user.rows.length > 0) await client.pushMessage(user.rows[0].line_user_id, { type: 'text', text: '因餘額不足，您今天的訂單已被自動取消，款項已退回。' });
+        }
+
+        const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
+        let summaryText;
+        if (summaryResult.rows.length > 0) {
+            summaryText = `--- ${settlementDate} 訂單統計 ---\n`;
+            const drinkSummary = {};
+            summaryResult.rows.forEach(row => {
+                const orderCount = parseInt(row.count);
+                summaryText += `${row.full_item_name}: ${orderCount}份\n`;
+                if (row.selected_drink) {
+                    drinkSummary[row.selected_drink] = (drinkSummary[row.selected_drink] || 0) + orderCount;
+                }
+            });
+            summaryText += '\n--- 飲料統計 ---\n';
+            for (const drink in drinkSummary) {
+                summaryText += `${drink}: ${drinkSummary[drink]}杯\n`;
+            }
+        } else {
+            summaryText = `--- ${settlementDate} 訂單報告 ---\n\n今日沒有任何成功結算的訂單。`;
+        }
+
+        const admins = await dbClient.query('SELECT line_user_id FROM users WHERE is_admin = true');
+        if (admins.rows.length > 0) {
+            const adminIds = admins.rows.map(a => a.line_user_id);
+            await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
+        }
+
+        await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
+        await dbClient.query('COMMIT');
+        console.log(`[結算任務成功] 日期 ${settlementDate} 結算完成`);
+    } catch (error) {
+        await dbClient.query('ROLLBACK');
+        console.error(`[結算任務失敗] 結算 ${settlementDate} 時發生錯誤`, error);
+    } finally {
+        dbClient.release();
     }
 }
 
@@ -209,106 +301,6 @@ app.get('/admin/orders', async (req, res) => {
     }
 });
 
-
-// --- 自動結算 API (已修改為智慧判斷) ---
-app.post('/api/settle-daily-orders', async (req, res) => {
-    const providedSecret = req.header('X-Settlement-Secret');
-    if (!SETTLEMENT_SECRET || providedSecret !== SETTLEMENT_SECRET) {
-        console.warn('偵測到未經授權的結算請求');
-        return res.status(403).send('Forbidden: Invalid secret');
-    }
-
-    const now = new Date();
-    const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const settlementDate = taipeiNow.toLocaleDateString('en-CA');
-
-    const dbClient = await pool.connect();
-    try {
-        await dbClient.query('BEGIN');
-
-        // 1. 檢查今天是否已經結算過
-        const check = await dbClient.query('SELECT * FROM daily_settlements WHERE settlement_date = $1', [settlementDate]);
-        if (check.rows.length > 0) {
-            await dbClient.query('ROLLBACK');
-            console.log(`[排程檢查] 日期 ${settlementDate} 已結算過，跳過。`);
-            return res.status(200).send('今日已結算');
-        }
-
-        // 2. 取得截止時間並判斷是否已到點
-        const deadlineTime = await getSetting('deadline_time', '09:00');
-        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
-        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
-
-        if (!isPastDeadline) {
-            await dbClient.query('ROLLBACK');
-            console.log(`[排程檢查] 時間未到 (現在 ${taipeiNow.getHours()}:${taipeiNow.getMinutes()} / 截止 ${deadlineTime})，跳過。`);
-            return res.status(200).send('時間未到，不執行結算');
-        }
-        
-        // 3. 執行結算流程 (以下與原版相同)
-        console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
-
-        const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
-        const cancelledUserIds = new Set();
-        if (negativeUsers.rows.length > 0) {
-            const userIds = negativeUsers.rows.map(u => u.id);
-            const ordersToCancel = await dbClient.query('SELECT id, user_id, total_amount FROM orders WHERE order_for_date = $1 AND user_id = ANY($2::int[]) AND status = $3', [settlementDate, userIds, 'preparing']);
-            for (const order of ordersToCancel.rows) {
-                await dbClient.query('UPDATE orders SET status = $1 WHERE id = $2', ['cancelled_by_system', order.id]);
-                await dbClient.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [order.total_amount, order.user_id]);
-                await dbClient.query('INSERT INTO transactions (user_id, type, amount, related_order_id) VALUES ($1, $2, $3, $4)', [order.user_id, 'refund', order.total_amount, order.id]);
-                cancelledUserIds.add(order.user_id);
-            }
-        }
-        
-        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
-        for (const order of successOrders.rows) {
-            const message = `訂餐成功！\n您今天訂購了：${order.items}\n您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
-            await client.pushMessage(order.line_user_id, { type: 'text', text: message });
-        }
-        for (const userId of cancelledUserIds) {
-            const user = await dbClient.query('SELECT line_user_id FROM users WHERE id = $1', [userId]);
-            if(user.rows.length > 0) await client.pushMessage(user.rows[0].line_user_id, { type: 'text', text: '因餘額不足，您今天的訂單已被自動取消，款項已退回。' });
-        }
-
-        const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
-        let summaryText;
-        if (summaryResult.rows.length > 0) {
-            summaryText = `--- ${settlementDate} 訂單統計 ---\n`;
-            const drinkSummary = {};
-            summaryResult.rows.forEach(row => {
-                const orderCount = parseInt(row.count);
-                summaryText += `${row.full_item_name}: ${orderCount}份\n`;
-                if (row.selected_drink) {
-                    drinkSummary[row.selected_drink] = (drinkSummary[row.selected_drink] || 0) + orderCount;
-                }
-            });
-            summaryText += '\n--- 飲料統計 ---\n';
-            for (const drink in drinkSummary) {
-                summaryText += `${drink}: ${drinkSummary[drink]}杯\n`;
-            }
-        } else {
-            summaryText = `--- ${settlementDate} 訂單報告 ---\n\n今日沒有任何成功結算的訂單。`;
-        }
-
-        const admins = await dbClient.query('SELECT line_user_id FROM users WHERE is_admin = true');
-        if (admins.rows.length > 0) {
-            const adminIds = admins.rows.map(a => a.line_user_id);
-            await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
-        }
-
-        await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
-        await dbClient.query('COMMIT');
-        console.log(`[結算任務成功] 日期 ${settlementDate} 結算完成`);
-        res.status(200).send('結算完成');
-    } catch (error) {
-        await dbClient.query('ROLLBACK');
-        console.error(`[結算任務失敗] 結算 ${settlementDate} 時發生錯誤`, error);
-        res.status(500).send('結算失敗');
-    } finally {
-        dbClient.release();
-    }
-});
 
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
 async function handleEvent(event) {
@@ -677,4 +669,15 @@ async function handleCancelOrder(userId, orderId, replyToken) {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`伺服器正在 http://localhost:${port} 上成功運行`);
+  
+  // (新增) 啟動內建排程器
+  // 每分鐘檢查一次
+  cron.schedule('* * * * *', () => {
+    console.log(`[內建排程] 每分鐘檢查一次，當前時間: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })}`);
+    runDailySettlement();
+  }, {
+    scheduled: true,
+    timezone: "Asia/Taipei"
+  });
+
 });
