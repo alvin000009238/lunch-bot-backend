@@ -1,25 +1,21 @@
 /*
  * =================================================================
- * == 檔案: index.js (最終版，使用內建排程 node-cron)
+ * == 檔案: index.js (已更新，增加 finished 狀態)
  * =================================================================
- * 1. 引入 node-cron 套件，建立內建排程器。
- * 2. 排程器每分鐘檢查一次，時間一到就自動執行結算。
- * 3. 移除對外部 cron 和 SETTLEMENT_SECRET 的依賴。
+ * 1. 在結算流程中，將成功的訂單狀態從 'preparing' 更新為 'finished'。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
 const cors = require('cors');
-const cron = require('node-cron'); // (新增) 引入 node-cron
+const cron = require('node-cron');
 
 // --- 2. 設定 ---
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
 };
-// 不再需要 SETTLEMENT_SECRET
-// const SETTLEMENT_SECRET = process.env.SETTLEMENT_SECRET; 
 
 const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
 const pool = new Pool({
@@ -62,7 +58,7 @@ async function getSetting(key, defaultValue) {
     }
 }
 
-// (新增) 將結算邏輯獨立成一個函式
+// 將結算邏輯獨立成一個函式
 async function runDailySettlement() {
     const now = new Date();
     const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -72,28 +68,23 @@ async function runDailySettlement() {
     try {
         await dbClient.query('BEGIN');
 
-        // 1. 檢查今天是否已經結算過
         const check = await dbClient.query('SELECT * FROM daily_settlements WHERE settlement_date = $1', [settlementDate]);
         if (check.rows.length > 0) {
             await dbClient.query('ROLLBACK');
-            // 這則日誌現在只會在應用程式重啟時，於已結算過的日期出現，屬於正常現象
             console.log(`[排程檢查] 日期 ${settlementDate} 已結算過，跳過。`);
             return;
         }
 
-        // 2. 取得截止時間並判斷是否已到點
         const deadlineTime = await getSetting('deadline_time', '09:00');
         const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
         const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
 
         if (!isPastDeadline) {
             await dbClient.query('ROLLBACK');
-            // 這則日誌不會頻繁出現，只會在排程啟動初期出現
             console.log(`[排程檢查] 時間未到 (現在 ${taipeiNow.getHours()}:${taipeiNow.getMinutes()} / 截止 ${deadlineTime})，跳過。`);
             return;
         }
         
-        // 3. 執行結算流程
         console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
 
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
@@ -144,6 +135,14 @@ async function runDailySettlement() {
             const adminIds = admins.rows.map(a => a.line_user_id);
             await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
         }
+
+        // (新增) 將所有成功結算的訂單狀態更新為 'finished'
+        const updateResult = await dbClient.query(
+            "UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'",
+            [settlementDate]
+        );
+        console.log(`[結算流程] 已將 ${updateResult.rowCount} 筆 ${settlementDate} 的成功訂單狀態更新為 'finished'`);
+
 
         await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
         await dbClient.query('COMMIT');
@@ -670,7 +669,7 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`伺服器正在 http://localhost:${port} 上成功運行`);
   
-  // (新增) 啟動內建排程器
+  // 啟動內建排程器
   // 每分鐘檢查一次
   cron.schedule('* * * * *', () => {
     console.log(`[內建排程] 每分鐘檢查一次，當前時間: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })}`);

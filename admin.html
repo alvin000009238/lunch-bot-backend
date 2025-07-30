@@ -1,5 +1,5 @@
 <!-- ================================================================= -->
-<!-- == 檔案: admin.html (已更新，增加設定截止分鐘功能)         == -->
+<!-- == 檔案: admin.html (已更新，增加 finished 狀態樣式)       == -->
 <!-- ================================================================= -->
 <!DOCTYPE html>
 <html lang="zh-Hant">
@@ -36,9 +36,11 @@
         .price-group { display: flex; gap: 5px; }
         .price-group select { flex-grow: 1; }
         .price-group input { width: 80px; }
-        td.status-cancelled_by_system, td.status-cancelled_by_user { background-color: #f8d7da; text-decoration: line-through; }
-        /* (修改) 調整系統設定區塊的 Grid 佈局 */
         .settings-grid { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+        
+        /* (新增) 完成訂單的樣式 */
+        td.status-finished { background-color: #d4edda; color: #155724; }
+        td.status-cancelled_by_system, td.status-cancelled_by_user { background-color: #f8d7da; text-decoration: line-through; }
     </style>
 </head>
 <body>
@@ -85,7 +87,6 @@
         <div id="order-message" class="message-box"></div>
     </div>
 
-    <!-- (修改) 系統設定區塊 -->
     <div class="container">
         <h2>系統設定</h2>
         <div id="settings-form">
@@ -109,7 +110,6 @@
         const orderList = document.getElementById('order-list');
         const orderMessageDiv = document.getElementById('order-message');
         const orderDateFilter = document.getElementById('order-date-filter');
-        // (修改) 系統設定相關元素
         const settingsMessageDiv = document.getElementById('settings-message');
         const deadlineTimeInput = document.getElementById('deadline-time');
 
@@ -313,7 +313,6 @@
             }
         }
         
-        // (修改) 載入和儲存系統設定的函式
         async function loadSettings() {
             if (!checkBackendUrl()) return;
             try {
