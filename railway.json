@@ -9,10 +9,9 @@
     "healthcheckTimeout": 100,
     "cron": [
       {
-        "schedule": "13 2 * * *",
-        "command": "curl -s -X POST -H \"X-Settlement-Secret: ${SETTLEMENT_SECRET}\" https://${RAILWAY_PUBLIC_DOMAIN}/api/settle-daily-orders"
+        "schedule": "*/5 * * * *",
+        "command": "curl -s -X POST https://${RAILWAY_PUBLIC_DOMAIN}/api/cron-test"
       }
     ]
   }
 }
-

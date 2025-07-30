@@ -1,9 +1,7 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，增加設定截止分鐘功能)
+ * == 檔案: index.js (已更新，加入排程測試 API)
  * =================================================================
- * 1. 將截止時間設定從僅小時改為 HH:MM 格式。
- * 2. 更新 API 與時間判斷邏輯以支援分鐘。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -35,6 +33,13 @@ const client = new line.Client(config);
 // --- 5. 建立 API ---
 app.get('/', (req, res) => { res.send('伺服器已啟動！'); });
 
+// (新增) 排程測試專用 API
+app.post('/api/cron-test', (req, res) => {
+  console.log(`[排程測試] Cron job 測試成功！收到請求於 ${new Date().toISOString()}`);
+  res.status(200).send('Cron test endpoint is alive.');
+});
+
+
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent)).then((result) => res.json(result)).catch((err) => {
     console.error(err);
@@ -62,11 +67,10 @@ async function getSetting(key, defaultValue) {
 
 // --- 後台管理 API ---
 
-// (修改) 系統設定 API
 app.get('/admin/settings', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM app_settings WHERE key = $1', ['deadline_time']);
-        const deadline = result.rows.length > 0 ? result.rows[0].value : '09:00'; // 預設為 09:00
+        const deadline = result.rows.length > 0 ? result.rows[0].value : '09:00';
         res.json({ deadline_time: deadline });
     } catch (error) {
         if (error.code === '42P01') { 
@@ -87,7 +91,6 @@ app.get('/admin/settings', async (req, res) => {
 
 app.post('/admin/settings', async (req, res) => {
     const { deadline_time } = req.body;
-    // 簡單的正則表達式來驗證 HH:MM 格式
     if (!deadline_time || !/^\d{2}:\d{2}$/.test(deadline_time)) {
         return res.status(400).json({ error: '請提供有效的截止時間 (HH:MM 格式)' });
     }
@@ -207,7 +210,7 @@ app.get('/admin/orders', async (req, res) => {
 });
 
 
-// --- 自動結算 API ---
+// --- 自動結算 API (已修改為智慧判斷) ---
 app.post('/api/settle-daily-orders', async (req, res) => {
     const providedSecret = req.header('X-Settlement-Secret');
     if (!SETTLEMENT_SECRET || providedSecret !== SETTLEMENT_SECRET) {
@@ -215,20 +218,35 @@ app.post('/api/settle-daily-orders', async (req, res) => {
         return res.status(403).send('Forbidden: Invalid secret');
     }
 
-    const { date } = req.body;
-    const settlementDate = date || new Date().toLocaleDateString('en-CA');
-    
-    console.log(`[排程任務開始] 準備結算日期: ${settlementDate}`);
+    const now = new Date();
+    const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+    const settlementDate = taipeiNow.toLocaleDateString('en-CA');
 
     const dbClient = await pool.connect();
     try {
         await dbClient.query('BEGIN');
+
+        // 1. 檢查今天是否已經結算過
         const check = await dbClient.query('SELECT * FROM daily_settlements WHERE settlement_date = $1', [settlementDate]);
         if (check.rows.length > 0) {
             await dbClient.query('ROLLBACK');
-            console.log(`[排程任務跳過] 日期 ${settlementDate} 已結算過`);
+            console.log(`[排程檢查] 日期 ${settlementDate} 已結算過，跳過。`);
             return res.status(200).send('今日已結算');
         }
+
+        // 2. 取得截止時間並判斷是否已到點
+        const deadlineTime = await getSetting('deadline_time', '09:00');
+        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
+        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
+
+        if (!isPastDeadline) {
+            await dbClient.query('ROLLBACK');
+            console.log(`[排程檢查] 時間未到 (現在 ${taipeiNow.getHours()}:${taipeiNow.getMinutes()} / 截止 ${deadlineTime})，跳過。`);
+            return res.status(200).send('時間未到，不執行結算');
+        }
+        
+        // 3. 執行結算流程 (以下與原版相同)
+        console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
 
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
         const cancelledUserIds = new Set();
@@ -281,11 +299,11 @@ app.post('/api/settle-daily-orders', async (req, res) => {
 
         await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
         await dbClient.query('COMMIT');
-        console.log(`[排程任務成功] 日期 ${settlementDate} 結算完成`);
+        console.log(`[結算任務成功] 日期 ${settlementDate} 結算完成`);
         res.status(200).send('結算完成');
     } catch (error) {
         await dbClient.query('ROLLBACK');
-        console.error(`[排程任務失敗] 結算 ${settlementDate} 時發生錯誤`, error);
+        console.error(`[結算任務失敗] 結算 ${settlementDate} 時發生錯誤`, error);
         res.status(500).send('結算失敗');
     } finally {
         dbClient.release();
@@ -295,7 +313,6 @@ app.post('/api/settle-daily-orders', async (req, res) => {
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
 async function handleEvent(event) {
     const userId = event.source.userId;
-    console.log('收到事件:', event.type, event);
     
     if (event.type === 'follow') return handleFollowEvent(userId, event.replyToken);
     
@@ -321,6 +338,7 @@ async function handleEvent(event) {
 }
 
 // --- 7. 處理各種動作的輔助函式 ---
+// (以下省略，與前一版相同)
 async function handleFollowEvent(userId, replyToken) {
     try {
         const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
@@ -342,7 +360,6 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         const item = menuItemResult.rows[0];
         const orderForDate = new Date(item.menu_date).toLocaleDateString('en-CA');
 
-        // (修改) 從資料庫讀取 HH:MM 格式的截止時間
         const deadlineTime = await getSetting('deadline_time', '09:00');
         const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
 
@@ -541,7 +558,6 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
         const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
         const orderDate = new Date(selectedDate);
         
-        // (修改) 從資料庫讀取 HH:MM 格式的截止時間
         const deadlineTime = await getSetting('deadline_time', '09:00');
         const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
         
@@ -626,7 +642,6 @@ async function handleCancelOrder(userId, orderId, replyToken) {
         const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
         const orderDate = new Date(order.order_for_date);
         
-        // (修改) 從資料庫讀取 HH:MM 格式的截止時間
         const deadlineTime = await getSetting('deadline_time', '09:00');
         const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
         
