@@ -1,8 +1,9 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，增加 finished 狀態)
+ * == 檔案: index.js (已更新，修正取消流程中的 displayText 問題)
  * =================================================================
- * 1. 在結算流程中，將成功的訂單狀態從 'preparing' 更新為 'finished'。
+ * 1. 在 showOrdersByDate 函式中，移除建立「取消訂單」按鈕時的 displayText 屬性，避免 replyToken 衝突。
+ * 2. 在結算流程中，將成功的訂單狀態從 'preparing' 更新為 'finished'。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -303,6 +304,9 @@ app.get('/admin/orders', async (req, res) => {
 
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
 async function handleEvent(event) {
+    // 增加一個日誌來追蹤收到的事件
+    console.log('Received event:', JSON.stringify(event, null, 2));
+
     const userId = event.source.userId;
     
     if (event.type === 'follow') return handleFollowEvent(userId, event.replyToken);
@@ -325,11 +329,12 @@ async function handleEvent(event) {
     if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(userId, event.replyToken);
     if (userMessage === '取消') return askToCancelOrder(userId, event.replyToken);
     
-    return client.replyMessage(replyToken, { type: 'text', text: `您好，請輸入「菜單」、「餘額」或「取消」。` });
+    // 如果沒有任何關鍵字匹配，就不回覆，以避免搶走 postback 的 replyToken
+    // return client.replyMessage(event.replyToken, { type: 'text', text: `您好，請輸入「菜單」、「餘額」或「取消」。` });
+    return Promise.resolve(null);
 }
 
 // --- 7. 處理各種動作的輔助函式 ---
-// (以下省略，與前一版相同)
 async function handleFollowEvent(userId, replyToken) {
     try {
         const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
@@ -424,7 +429,7 @@ async function askForDate(replyToken) {
         const dateString = taipeiTime.toLocaleDateString('en-CA');
         const dayOfWeek = weekdays[taipeiTime.getDay()];
         let label = (i === 0) ? `今天 (${dayOfWeek})` : (i === 1) ? `明天 (${dayOfWeek})` : `${taipeiTime.getMonth() + 1}/${taipeiTime.getDate()} (${dayOfWeek})`;
-        days.push({ type: 'button', style: 'primary', height: 'sm', margin: 'sm', action: { type: 'postback', label: label, data: `action=select_date&date=${dateString}`, displayText: `我想訂 ${label} 的餐點` } });
+        days.push({ type: 'button', style: 'primary', height: 'sm', margin: 'sm', action: { type: 'postback', label: label, data: `action=select_date&date=${dateString}` } });
     }
     const flexMessage = { type: 'flex', altText: '選擇訂餐日期', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: [{ type: 'text', text: '您想訂哪一天的餐點？', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: days } } };
     return client.replyMessage(replyToken, flexMessage);
@@ -440,10 +445,10 @@ async function sendMenuFlexMessage(replyToken, forDate) {
             const footerButtons = [];
             if (item.is_combo_eligible) {
                 const singlePrice = parseFloat(item.price) - COMBO_PRICE;
-                footerButtons.push({ type: 'button', style: 'secondary', height: 'sm', action: { type: 'postback', label: `僅單點 (${singlePrice})`, data: `action=order&menuItemId=${item.id}&isCombo=false`, displayText: `我只要單點一份${item.name}` } });
-                footerButtons.push({ type: 'button', style: 'primary', height: 'sm', margin: 'sm', action: { type: 'postback', label: `升級套餐 (${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=true`, displayText: `我要一份${item.name}套餐` } });
+                footerButtons.push({ type: 'button', style: 'secondary', height: 'sm', action: { type: 'postback', label: `僅單點 (${singlePrice})`, data: `action=order&menuItemId=${item.id}&isCombo=false` } });
+                footerButtons.push({ type: 'button', style: 'primary', height: 'sm', margin: 'sm', action: { type: 'postback', label: `升級套餐 (${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=true` } });
             } else {
-                footerButtons.push({ type: 'button', style: 'primary', height: 'sm', action: { type: 'postback', label: `確認單點 (${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=false`, displayText: `我要一份${item.name}` } });
+                footerButtons.push({ type: 'button', style: 'primary', height: 'sm', action: { type: 'postback', label: `確認單點 (${parseFloat(item.price)})`, data: `action=order&menuItemId=${item.id}&isCombo=false` } });
             }
 
             return { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [ { type: 'text', text: `${displayId} ${item.name}`, weight: 'bold', size: 'xl' } ] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: footerButtons } };
@@ -460,7 +465,7 @@ async function sendMenuFlexMessage(replyToken, forDate) {
 async function askForDrink(replyToken, menuItemId) {
     const buttons = DRINKS.map(drink => ({
         type: 'button', style: 'primary', height: 'sm', margin: 'sm',
-        action: { type: 'postback', label: drink, data: `action=select_drink&menuItemId=${menuItemId}&drink=${drink}`, displayText: `飲料我選${drink}` }
+        action: { type: 'postback', label: drink, data: `action=select_drink&menuItemId=${menuItemId}&drink=${drink}` }
     }));
     const flexMessage = { type: 'flex', altText: '選擇套餐飲料', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '請選擇您的套餐飲料', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons } } };
     return client.replyMessage(replyToken, flexMessage);
@@ -510,7 +515,6 @@ async function askToCancelOrder(userId, replyToken) {
             
             const buttonText = `${label} - ${parseInt(dateRow.order_count)}筆訂單 (${parseFloat(dateRow.total_amount).toFixed(0)}元)`;
             
-            // --- 修改後的程式碼 ---
             return {
                 type: 'button', style: 'secondary', height: 'sm', margin: 'sm',
                 action: { type: 'postback', label: buttonText, data: `action=cancel_select_date&date=${dateString}` }
@@ -578,9 +582,13 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
             const items = (order.items || '未知商品').length > 15 ? (order.items || '未知商品').substring(0, 12) + '...' : (order.items || '未知商品');
             const buttonText = `${items} (${parseFloat(order.total_amount).toFixed(0)}元)`;
             
+            // ==========================================================
+            // == ✨ 修正點 ✨
+            // == 移除了下面 action 物件中的 displayText 屬性
+            // ==========================================================
             return {
                 type: 'button', style: 'danger', height: 'sm', margin: 'sm',
-                action: { type: 'postback', label: buttonText, data: `action=cancel_order&orderId=${order.id}`, displayText: `取消訂單：${items}` }
+                action: { type: 'postback', label: buttonText, data: `action=cancel_order&orderId=${order.id}` }
             };
         });
 
