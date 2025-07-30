@@ -510,9 +510,10 @@ async function askToCancelOrder(userId, replyToken) {
             
             const buttonText = `${label} - ${parseInt(dateRow.order_count)}筆訂單 (${parseFloat(dateRow.total_amount).toFixed(0)}元)`;
             
+            // --- 修改後的程式碼 ---
             return {
                 type: 'button', style: 'secondary', height: 'sm', margin: 'sm',
-                action: { type: 'postback', label: buttonText, data: `action=cancel_select_date&date=${dateString}`, displayText: `我要查看 ${label} 的訂單` }
+                action: { type: 'postback', label: buttonText, data: `action=cancel_select_date&date=${dateString}` }
             };
         });
         
