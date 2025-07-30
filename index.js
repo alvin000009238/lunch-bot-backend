@@ -1,10 +1,9 @@
 /*
  * =================================================================
- * == 檔案: index.js (修正版)
+ * == 檔案: index.js (已更新，增加設定截止分鐘功能)
  * =================================================================
- * 1. 修正了自動結算功能需要外部排程器觸發的問題。
- * 2. 為結算 API 增加了密鑰驗證，提升安全性。
- * 3. 優化了結算通知邏輯。
+ * 1. 將截止時間設定從僅小時改為 HH:MM 格式。
+ * 2. 更新 API 與時間判斷邏輯以支援分鐘。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -17,7 +16,6 @@ const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
 };
-// !! 新增：從環境變數讀取結算用的密鑰
 const SETTLEMENT_SECRET = process.env.SETTLEMENT_SECRET;
 
 const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
@@ -27,7 +25,6 @@ const pool = new Pool({
     rejectUnauthorized: false
   }
 });
-const DEADLINE_HOUR = 9;
 const COMBO_PRICE = 15;
 const DRINKS = ['紅茶', '綠茶', '鮮奶茶'];
 
@@ -38,7 +35,6 @@ const client = new line.Client(config);
 // --- 5. 建立 API ---
 app.get('/', (req, res) => { res.send('伺服器已啟動！'); });
 
-// Webhook 路由必須在任何 body-parser (如 express.json()) 之前
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent)).then((result) => res.json(result)).catch((err) => {
     console.error(err);
@@ -46,11 +42,71 @@ app.post('/webhook', line.middleware(config), (req, res) => {
   });
 });
 
-// 在 Webhook 之後，為所有後續的 /admin 路由啟用 cors 和 json 解析
 app.use(cors());
 app.use(express.json());
 
-// --- 後台管理 API (與原版相同，此處省略以節省篇幅) ---
+// --- 輔助函式：從資料庫取得設定 ---
+async function getSetting(key, defaultValue) {
+    try {
+        const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
+        if (result.rows.length > 0) {
+            return result.rows[0].value;
+        }
+        return defaultValue;
+    } catch (error) {
+        console.warn(`無法從資料庫取得設定 '${key}'，使用預設值: ${defaultValue}. 錯誤: ${error.message}`);
+        return defaultValue;
+    }
+}
+
+
+// --- 後台管理 API ---
+
+// (修改) 系統設定 API
+app.get('/admin/settings', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM app_settings WHERE key = $1', ['deadline_time']);
+        const deadline = result.rows.length > 0 ? result.rows[0].value : '09:00'; // 預設為 09:00
+        res.json({ deadline_time: deadline });
+    } catch (error) {
+        if (error.code === '42P01') { 
+            try {
+                await pool.query('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)');
+                await pool.query("INSERT INTO app_settings (key, value) VALUES ('deadline_time', '09:00') ON CONFLICT (key) DO NOTHING");
+                console.log('成功建立 app_settings 資料表並設定預設值。');
+                return res.json({ deadline_time: '09:00' });
+            } catch (creationError) {
+                 console.error('建立 app_settings 表時發生錯誤', creationError);
+                 return res.status(500).json({ error: '伺服器內部錯誤' });
+            }
+        }
+        console.error('取得設定時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+app.post('/admin/settings', async (req, res) => {
+    const { deadline_time } = req.body;
+    // 簡單的正則表達式來驗證 HH:MM 格式
+    if (!deadline_time || !/^\d{2}:\d{2}$/.test(deadline_time)) {
+        return res.status(400).json({ error: '請提供有效的截止時間 (HH:MM 格式)' });
+    }
+    try {
+        const query = `
+            INSERT INTO app_settings (key, value) 
+            VALUES ('deadline_time', $1) 
+            ON CONFLICT (key) 
+            DO UPDATE SET value = $1;
+        `;
+        await pool.query(query, [deadline_time]);
+        res.json({ message: '設定儲存成功' });
+    } catch (error) {
+        console.error('儲存設定時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+
 app.get('/admin/daily-menu', async (req, res) => {
     try {
         const { date } = req.query;
@@ -151,9 +207,8 @@ app.get('/admin/orders', async (req, res) => {
 });
 
 
-// --- 自動結算 API (已加入安全性檢查) ---
+// --- 自動結算 API ---
 app.post('/api/settle-daily-orders', async (req, res) => {
-    // !! 安全性檢查：從 request header 取得密鑰
     const providedSecret = req.header('X-Settlement-Secret');
     if (!SETTLEMENT_SECRET || providedSecret !== SETTLEMENT_SECRET) {
         console.warn('偵測到未經授權的結算請求');
@@ -163,7 +218,6 @@ app.post('/api/settle-daily-orders', async (req, res) => {
     const { date } = req.body;
     const settlementDate = date || new Date().toLocaleDateString('en-CA');
     
-    // 增加日誌，方便確認排程器是否正常觸發
     console.log(`[排程任務開始] 準備結算日期: ${settlementDate}`);
 
     const dbClient = await pool.connect();
@@ -176,7 +230,6 @@ app.post('/api/settle-daily-orders', async (req, res) => {
             return res.status(200).send('今日已結算');
         }
 
-        // 1. 清理負餘額訂單
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
         const cancelledUserIds = new Set();
         if (negativeUsers.rows.length > 0) {
@@ -190,8 +243,7 @@ app.post('/api/settle-daily-orders', async (req, res) => {
             }
         }
         
-        // 2. 發送個人化通知
-        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate, 'preparing']);
+        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
         for (const order of successOrders.rows) {
             const message = `訂餐成功！\n您今天訂購了：${order.items}\n您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
             await client.pushMessage(order.line_user_id, { type: 'text', text: message });
@@ -201,7 +253,6 @@ app.post('/api/settle-daily-orders', async (req, res) => {
             if(user.rows.length > 0) await client.pushMessage(user.rows[0].line_user_id, { type: 'text', text: '因餘額不足，您今天的訂單已被自動取消，款項已退回。' });
         }
 
-        // 3. 統計並發送結算報告給管理員
         const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
         let summaryText;
         if (summaryResult.rows.length > 0) {
@@ -219,7 +270,6 @@ app.post('/api/settle-daily-orders', async (req, res) => {
                 summaryText += `${drink}: ${drinkSummary[drink]}杯\n`;
             }
         } else {
-            // !! 優化：即使沒有訂單也發送通知
             summaryText = `--- ${settlementDate} 訂單報告 ---\n\n今日沒有任何成功結算的訂單。`;
         }
 
@@ -243,56 +293,34 @@ app.post('/api/settle-daily-orders', async (req, res) => {
 });
 
 // --- 6. 撰寫事件處理函式 (Event Handler) ---
-// (與原版相同，此處省略以節省篇幅)
 async function handleEvent(event) {
     const userId = event.source.userId;
-    
-    // 添加更多調試資訊
     console.log('收到事件:', event.type, event);
     
     if (event.type === 'follow') return handleFollowEvent(userId, event.replyToken);
     
     if (event.type === 'postback') {
-        console.log('Postback data:', event.postback.data);
-        
         const data = new URLSearchParams(event.postback.data);
         const action = data.get('action');
-        
-        console.log('解析的 action:', action);
-        console.log('所有 postback 參數:', Object.fromEntries(data));
         
         if (action === 'select_date') return sendMenuFlexMessage(event.replyToken, data.get('date'));
         if (action === 'order') return handleOrderAction(userId, parseInt(data.get('menuItemId')), data.get('isCombo') === 'true', null, event.replyToken);
         if (action === 'select_drink') return handleOrderAction(userId, parseInt(data.get('menuItemId')), true, data.get('drink'), event.replyToken);
-        if (action === 'cancel_select_date') {
-            const selectedDate = data.get('date');
-            console.log('處理取消訂單日期選擇，日期:', selectedDate);
-            return showOrdersByDate(userId, selectedDate, event.replyToken);
-        }
-        if (action === 'cancel_order') {
-            const orderId = parseInt(data.get('orderId'));
-            console.log('準備取消訂單 ID:', orderId);
-            return handleCancelOrder(userId, orderId, event.replyToken);
-        }
+        if (action === 'cancel_select_date') return showOrdersByDate(userId, data.get('date'), event.replyToken);
+        if (action === 'cancel_order') return handleCancelOrder(userId, parseInt(data.get('orderId')), event.replyToken);
     }
     
     if (event.type !== 'message' || event.message.type !== 'text') return Promise.resolve(null);
     
     const userMessage = event.message.text;
-    console.log('收到文字訊息:', userMessage);
-    
     if (userMessage === '菜單' || userMessage === '訂餐') return askForDate(event.replyToken);
     if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(userId, event.replyToken);
     if (userMessage === '取消') return askToCancelOrder(userId, event.replyToken);
     
-    return client.replyMessage(event.replyToken, { 
-        type: 'text', 
-        text: `您好，請輸入「菜單」、「餘額」或「取消」。` 
-    });
+    return client.replyMessage(replyToken, { type: 'text', text: `您好，請輸入「菜單」、「餘額」或「取消」。` });
 }
 
 // --- 7. 處理各種動作的輔助函式 ---
-// (與原版相同，此處省略以節省篇幅)
 async function handleFollowEvent(userId, replyToken) {
     try {
         const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
@@ -314,10 +342,17 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         const item = menuItemResult.rows[0];
         const orderForDate = new Date(item.menu_date).toLocaleDateString('en-CA');
 
+        // (修改) 從資料庫讀取 HH:MM 格式的截止時間
+        const deadlineTime = await getSetting('deadline_time', '09:00');
+        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
+
         const now = new Date();
         const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-        if (new Date(orderForDate).toDateString() === taipeiNow.toDateString() && taipeiNow.getHours() >= DEADLINE_HOUR) {
-            return client.replyMessage(replyToken, { type: 'text', text: '抱歉，今日訂餐已於上午9點截止。' });
+        
+        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
+
+        if (new Date(orderForDate).toDateString() === taipeiNow.toDateString() && isPastDeadline) {
+            return client.replyMessage(replyToken, { type: 'text', text: `抱歉，今日訂餐已於 ${deadlineTime} 截止。` });
         }
 
         if (item.is_combo_eligible && isCombo && !selectedDrink) {
@@ -346,7 +381,7 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         let successText = `訂購「${item.name}」成功！`;
         if (isCombo) successText += ` (套餐-${selectedDrink})`;
         successText += `\n金額: ${totalAmount}\n剩餘餘額: ${newBalance.toFixed(0)}`;
-        if (newBalance < 0) successText += '\n提醒您目前餘額為負，請記得在今日上午9點前儲值喔！';
+        if (newBalance < 0) successText += `\n提醒您目前餘額為負，請記得在今日 ${deadlineTime} 前儲值喔！`;
         
         return client.replyMessage(replyToken, { type: 'text', text: successText });
     } catch (error) {
@@ -425,40 +460,24 @@ async function askForDrink(replyToken, menuItemId) {
 
 async function askToCancelOrder(userId, replyToken) {
     try {
-        console.log('開始處理取消訂單請求，用戶ID:', userId);
-        
         const today = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).toLocaleDateString('en-CA');
-        console.log('今日日期:', today);
-        
         const userResult = await pool.query('SELECT id FROM users WHERE line_user_id = $1', [userId]);
         if (userResult.rows.length === 0) {
-            console.log('找不到用戶資料');
             return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
         }
         const dbUserId = userResult.rows[0].id;
-        console.log('資料庫用戶ID:', dbUserId);
 
         const query = `
-            SELECT 
-                o.order_for_date,
-                COUNT(*) as order_count,
-                SUM(o.total_amount) as total_amount
+            SELECT o.order_for_date, COUNT(*) as order_count, SUM(o.total_amount) as total_amount
             FROM orders o 
             WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date >= $2 
-            GROUP BY o.order_for_date
-            ORDER BY o.order_for_date
-            LIMIT 5;
+            GROUP BY o.order_for_date ORDER BY o.order_for_date LIMIT 5;
         `;
         
         const orderDates = await pool.query(query, [dbUserId, today]);
-        console.log('找到的有訂單的日期數量:', orderDates.rows.length);
-        console.log('日期詳情:', orderDates.rows);
         
         if (orderDates.rows.length === 0) {
-            return client.replyMessage(replyToken, { 
-                type: 'text', 
-                text: '您目前沒有可以取消的訂單。\n（只有狀態為「準備中」的訂單可以取消）' 
-            });
+            return client.replyMessage(replyToken, { type: 'text', text: '您目前沒有可以取消的訂單。\n（只有狀態為「準備中」的訂單可以取消）' });
         }
 
         const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
@@ -481,184 +500,85 @@ async function askToCancelOrder(userId, replyToken) {
                 }
             }
             
-            const orderCount = parseInt(dateRow.order_count);
-            const totalAmount = parseFloat(dateRow.total_amount).toFixed(0);
-            const buttonText = `${label} - ${orderCount}筆訂單 (${totalAmount}元)`;
+            const buttonText = `${label} - ${parseInt(dateRow.order_count)}筆訂單 (${parseFloat(dateRow.total_amount).toFixed(0)}元)`;
             
             return {
-                type: 'button', 
-                style: 'secondary', 
-                height: 'sm', 
-                margin: 'sm',
-                action: { 
-                    type: 'postback', 
-                    label: buttonText, 
-                    data: `action=cancel_select_date&date=${dateString}`, 
-                    displayText: `我要查看 ${label} 的訂單` 
-                }
+                type: 'button', style: 'secondary', height: 'sm', margin: 'sm',
+                action: { type: 'postback', label: buttonText, data: `action=cancel_select_date&date=${dateString}`, displayText: `我要查看 ${label} 的訂單` }
             };
         });
-
+        
+        const deadlineTime = await getSetting('deadline_time', '09:00');
         const flexMessage = { 
-            type: 'flex', 
-            altText: '選擇要取消訂單的日期', 
+            type: 'flex', altText: '選擇要取消訂單的日期', 
             contents: { 
                 type: 'bubble', 
                 body: { 
-                    type: 'box', 
-                    layout: 'vertical', 
+                    type: 'box', layout: 'vertical', 
                     contents: [
-                        { 
-                            type: 'text', 
-                            text: '請選擇要取消訂單的日期', 
-                            weight: 'bold', 
-                            size: 'lg' 
-                        },
-                        {
-                            type: 'text',
-                            text: '※ 只能取消今日上午9點前的訂單',
-                            size: 'sm',
-                            color: '#666666',
-                            margin: 'md'
-                        }
+                        { type: 'text', text: '請選擇要取消訂單的日期', weight: 'bold', size: 'lg' },
+                        { type: 'text', text: `※ 只能取消今日 ${deadlineTime} 前的訂單`, size: 'sm', color: '#666666', margin: 'md'}
                     ] 
                 }, 
-                footer: { 
-                    type: 'box', 
-                    layout: 'vertical', 
-                    spacing: 'sm', 
-                    contents: buttons 
-                } 
+                footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons } 
             } 
         };
         
         return client.replyMessage(replyToken, flexMessage);
     } catch (error) {
         console.error('查詢可取消訂單日期時發生錯誤', error);
-        return client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: '查詢訂單失敗，請稍後再試。\n錯誤詳情已記錄，請聯絡管理員。' 
-        });
+        return client.replyMessage(replyToken, { type: 'text', text: '查詢訂單失敗，請稍後再試。' });
     }
 }
 
 async function showOrdersByDate(userId, selectedDate, replyToken) {
     try {
-        console.log('顯示特定日期的訂單，用戶ID:', userId, '日期:', selectedDate);
-        
         const userResult = await pool.query('SELECT id FROM users WHERE line_user_id = $1', [userId]);
-        if (userResult.rows.length === 0) {
-            console.log('找不到用戶資料');
-            return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
-        }
+        if (userResult.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料。' });
         const dbUserId = userResult.rows[0].id;
-        console.log('資料庫用戶ID:', dbUserId);
 
         const now = new Date();
         const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
         const orderDate = new Date(selectedDate);
         
-        console.log('當前台北時間:', taipeiNow);
-        console.log('選擇的日期:', orderDate);
-        console.log('是否為今天:', orderDate.toDateString() === taipeiNow.toDateString());
-        console.log('當前小時:', taipeiNow.getHours());
+        // (修改) 從資料庫讀取 HH:MM 格式的截止時間
+        const deadlineTime = await getSetting('deadline_time', '09:00');
+        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
         
-        if (orderDate.toDateString() === taipeiNow.toDateString() && taipeiNow.getHours() >= DEADLINE_HOUR) {
-            return client.replyMessage(replyToken, { 
-                type: 'text', 
-                text: `已超過當日訂單的取消時間（上午${DEADLINE_HOUR}點截止）` 
-            });
+        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
+        
+        if (orderDate.toDateString() === taipeiNow.toDateString() && isPastDeadline) {
+            return client.replyMessage(replyToken, { type: 'text', text: `已超過當日訂單的取消時間（${deadlineTime} 截止）` });
         }
 
         const query = `
-            SELECT 
-                o.id, 
-                o.total_amount,
-                o.created_at,
-                o.status,
-                STRING_AGG(
-                    oi.item_name || 
-                    CASE 
-                        WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' 
-                        ELSE '' 
-                    END, ', '
-                    ORDER BY oi.id
-                ) as items
-            FROM orders o 
-            JOIN order_items oi ON o.id = oi.order_id 
+            SELECT o.id, o.total_amount, o.created_at, o.status,
+                   STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ' ORDER BY oi.id) as items
+            FROM orders o JOIN order_items oi ON o.id = oi.order_id 
             WHERE o.user_id = $1 AND o.status = 'preparing' AND o.order_for_date = $2 
             GROUP BY o.id, o.total_amount, o.created_at, o.status
-            ORDER BY o.created_at DESC
-            LIMIT 10;
+            ORDER BY o.created_at DESC LIMIT 10;
         `;
         
-        console.log('執行查詢，參數:', [dbUserId, selectedDate]);
         const orders = await pool.query(query, [dbUserId, selectedDate]);
-        console.log('找到的訂單數量:', orders.rows.length);
-        console.log('訂單詳情:', orders.rows);
         
         if (orders.rows.length === 0) {
-            const allOrdersQuery = `
-                SELECT o.id, o.status, o.created_at
-                FROM orders o 
-                WHERE o.user_id = $1 AND o.order_for_date = $2 
-                ORDER BY o.created_at DESC;
-            `;
-            const allOrders = await pool.query(allOrdersQuery, [dbUserId, selectedDate]);
-            console.log('該日期所有訂單（包括已取消）:', allOrders.rows);
-            
-            let message = '該日期沒有可以取消的訂單。';
-            if (allOrders.rows.length > 0) {
-                message += '\n（可能訂單已經被處理或取消）';
-            }
-            
-            return client.replyMessage(replyToken, { 
-                type: 'text', 
-                text: message
-            });
+            return client.replyMessage(replyToken, { type: 'text', text: '該日期沒有可以取消的訂單。' });
         }
 
-        const buttons = [];
-        
-        orders.rows.forEach((order, index) => {
-            const orderTime = new Date(order.created_at).toLocaleTimeString('zh-TW', { 
-                hour: '2-digit', 
-                minute: '2-digit',
-                timeZone: 'Asia/Taipei'
-            });
-            const amount = parseFloat(order.total_amount).toFixed(0);
+        const buttons = orders.rows.map(order => {
+            const items = (order.items || '未知商品').length > 15 ? (order.items || '未知商品').substring(0, 12) + '...' : (order.items || '未知商品');
+            const buttonText = `${items} (${parseFloat(order.total_amount).toFixed(0)}元)`;
             
-            let items = order.items || '未知商品';
-            if (items.length > 15) {
-                items = items.substring(0, 12) + '...';
-            }
-            
-            const buttonText = `${items} (${amount}元)`;
-            
-            buttons.push({
-                type: 'button', 
-                style: 'danger', 
-                height: 'sm', 
-                margin: 'sm',
-                action: { 
-                    type: 'postback', 
-                    label: buttonText, 
-                    data: `action=cancel_order&orderId=${order.id}`, 
-                    displayText: `取消訂單：${orderTime} ${items}` 
-                }
-            });
+            return {
+                type: 'button', style: 'danger', height: 'sm', margin: 'sm',
+                action: { type: 'postback', label: buttonText, data: `action=cancel_order&orderId=${order.id}`, displayText: `取消訂單：${items}` }
+            };
         });
 
         buttons.push({
-            type: 'button',
-            style: 'secondary',
-            height: 'sm',
-            margin: 'md',
-            action: {
-                type: 'message',
-                label: '⬅️ 重新選擇日期',
-                text: '取消'
-            }
+            type: 'button', style: 'secondary', height: 'sm', margin: 'md',
+            action: { type: 'message', label: '⬅️ 重新選擇日期', text: '取消' }
         });
 
         const dateDisplay = new Date(selectedDate).toLocaleDateString('zh-TW');
@@ -666,122 +586,72 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
         const dayOfWeek = weekdays[new Date(selectedDate).getDay()];
 
         const flexMessage = { 
-            type: 'flex', 
-            altText: '選擇要取消的訂單', 
+            type: 'flex', altText: '選擇要取消的訂單', 
             contents: { 
                 type: 'bubble', 
                 body: { 
-                    type: 'box', 
-                    layout: 'vertical', 
+                    type: 'box', layout: 'vertical', 
                     contents: [
-                        { 
-                            type: 'text', 
-                            text: `${dateDisplay} (${dayOfWeek})`, 
-                            weight: 'bold', 
-                            size: 'lg' 
-                        },
-                        {
-                            type: 'text',
-                            text: `共找到 ${orders.rows.length} 筆可取消的訂單`,
-                            size: 'sm',
-                            color: '#666666',
-                            margin: 'sm'
-                        }
+                        { type: 'text', text: `${dateDisplay} (${dayOfWeek})`, weight: 'bold', size: 'lg' },
+                        { type: 'text', text: `共找到 ${orders.rows.length} 筆可取消的訂單`, size: 'sm', color: '#666666', margin: 'sm' }
                     ] 
                 }, 
-                footer: { 
-                    type: 'box', 
-                    layout: 'vertical', 
-                    spacing: 'sm', 
-                    contents: buttons 
-                } 
+                footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons } 
             } 
         };
         
         return client.replyMessage(replyToken, flexMessage);
     } catch (error) {
         console.error('顯示特定日期訂單時發生錯誤', error);
-        console.error('錯誤堆疊:', error.stack);
-        return client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: `查詢訂單失敗，請稍後再試。\n錯誤資訊：${error.message}` 
-        });
+        return client.replyMessage(replyToken, { type: 'text', text: `查詢訂單失敗，請稍後再試。` });
     }
 }
 
 async function handleCancelOrder(userId, orderId, replyToken) {
     const dbClient = await pool.connect();
     try {
-        console.log('開始處理取消訂單，用戶ID:', userId, '訂單ID:', orderId);
-        
         await dbClient.query('BEGIN');
         
         const userResult = await dbClient.query('SELECT id FROM users WHERE line_user_id = $1', [userId]);
-        if (userResult.rows.length === 0) {
-            throw new Error('找不到使用者');
-        }
+        if (userResult.rows.length === 0) throw new Error('找不到使用者');
         const dbUserId = userResult.rows[0].id;
-        console.log('資料庫用戶ID:', dbUserId);
 
-        const orderResult = await dbClient.query(
-            'SELECT * FROM orders WHERE id = $1 AND user_id = $2', 
-            [orderId, dbUserId]
-        );
-        
-        if (orderResult.rows.length === 0) {
-            const orderExistsResult = await dbClient.query('SELECT user_id FROM orders WHERE id = $1', [orderId]);
-            if (orderExistsResult.rows.length === 0) {
-                throw new Error('找不到該訂單');
-            } else {
-                throw new Error('您沒有權限取消此訂單');
-            }
-        }
+        const orderResult = await dbClient.query('SELECT * FROM orders WHERE id = $1 AND user_id = $2', [orderId, dbUserId]);
+        if (orderResult.rows.length === 0) throw new Error('找不到該訂單或您沒有權限取消此訂單');
         
         const order = orderResult.rows[0];
-        console.log('找到訂單:', order);
-
-        if (order.status !== 'preparing') {
-            throw new Error(`訂單狀態為「${order.status}」，無法取消。只能取消狀態為「preparing」的訂單。`);
-        }
+        if (order.status !== 'preparing') throw new Error(`訂單狀態為「${order.status}」，無法取消。`);
 
         const now = new Date();
         const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
         const orderDate = new Date(order.order_for_date);
         
-        console.log('當前台北時間:', taipeiNow);
-        console.log('訂單日期:', orderDate);
-        console.log('是否同一天:', orderDate.toDateString() === taipeiNow.toDateString());
-        console.log('當前小時:', taipeiNow.getHours());
+        // (修改) 從資料庫讀取 HH:MM 格式的截止時間
+        const deadlineTime = await getSetting('deadline_time', '09:00');
+        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
         
-        if (orderDate.toDateString() === taipeiNow.toDateString() && taipeiNow.getHours() >= DEADLINE_HOUR) {
-            throw new Error(`已超過當日訂單的取消時間（上午${DEADLINE_HOUR}點截止）`);
+        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
+
+        if (orderDate.toDateString() === taipeiNow.toDateString() && isPastDeadline) {
+            throw new Error(`已超過當日訂單的取消時間（${deadlineTime} 截止）`);
         }
 
         await dbClient.query('UPDATE orders SET status = $1 WHERE id = $2', ['cancelled_by_user', orderId]);
         await dbClient.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [order.total_amount, dbUserId]);
-        await dbClient.query(
-            'INSERT INTO transactions (user_id, type, amount, related_order_id) VALUES ($1, $2, $3, $4)', 
-            [dbUserId, 'refund', order.total_amount, orderId]
-        );
+        await dbClient.query('INSERT INTO transactions (user_id, type, amount, related_order_id) VALUES ($1, $2, $3, $4)', [dbUserId, 'refund', order.total_amount, orderId]);
 
         await dbClient.query('COMMIT');
         
         const balanceResult = await dbClient.query('SELECT balance FROM users WHERE id = $1', [dbUserId]);
         const currentBalance = parseFloat(balanceResult.rows[0].balance).toFixed(0);
         
-        const successMessage = `✅ 訂單取消成功！\n` +
-                              `訂單編號：${orderId}\n` +
-                              `退款金額：${parseFloat(order.total_amount).toFixed(0)}\n` +
-                              `目前餘額：${currentBalance}`;
+        const successMessage = `✅ 訂單取消成功！\n訂單編號：${orderId}\n退款金額：${parseFloat(order.total_amount).toFixed(0)}\n目前餘額：${currentBalance}`;
         
         return client.replyMessage(replyToken, { type: 'text', text: successMessage });
     } catch (error) {
         await dbClient.query('ROLLBACK');
         console.error('取消訂單時發生錯誤', error);
-        return client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: `❌ 取消失敗：${error.message}` 
-        });
+        return client.replyMessage(replyToken, { type: 'text', text: `❌ 取消失敗：${error.message}` });
     } finally {
         dbClient.release();
     }
@@ -793,4 +663,3 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`伺服器正在 http://localhost:${port} 上成功運行`);
 });
-

@@ -1,5 +1,5 @@
 <!-- ================================================================= -->
-<!-- == 檔案: admin.html (增加 Enter 鍵切換功能)                  == -->
+<!-- == 檔案: admin.html (已更新，增加設定截止分鐘功能)         == -->
 <!-- ================================================================= -->
 <!DOCTYPE html>
 <html lang="zh-Hant">
@@ -37,6 +37,8 @@
         .price-group select { flex-grow: 1; }
         .price-group input { width: 80px; }
         td.status-cancelled_by_system, td.status-cancelled_by_user { background-color: #f8d7da; text-decoration: line-through; }
+        /* (修改) 調整系統設定區塊的 Grid 佈局 */
+        .settings-grid { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
     </style>
 </head>
 <body>
@@ -83,6 +85,19 @@
         <div id="order-message" class="message-box"></div>
     </div>
 
+    <!-- (修改) 系統設定區塊 -->
+    <div class="container">
+        <h2>系統設定</h2>
+        <div id="settings-form">
+             <div class="settings-grid">
+                <label for="deadline-time">訂單截止時間</label>
+                <input type="time" id="deadline-time">
+                <button onclick="saveSettings()" style="background-color: #17a2b8;">儲存設定</button>
+            </div>
+        </div>
+        <div id="settings-message" class="message-box"></div>
+    </div>
+
     <script>
         const backendUrl = 'https://lunch-bot-backend-production.up.railway.app';
         
@@ -94,6 +109,9 @@
         const orderList = document.getElementById('order-list');
         const orderMessageDiv = document.getElementById('order-message');
         const orderDateFilter = document.getElementById('order-date-filter');
+        // (修改) 系統設定相關元素
+        const settingsMessageDiv = document.getElementById('settings-message');
+        const deadlineTimeInput = document.getElementById('deadline-time');
 
         function checkBackendUrl() {
             if (backendUrl.startsWith('請貼上') || !backendUrl) {
@@ -295,23 +313,51 @@
             }
         }
         
-        // (新增) Enter 鍵切換功能
+        // (修改) 載入和儲存系統設定的函式
+        async function loadSettings() {
+            if (!checkBackendUrl()) return;
+            try {
+                const response = await fetch(`${backendUrl}/admin/settings`);
+                if (!response.ok) throw new Error('無法取得系統設定');
+                const settings = await response.json();
+                deadlineTimeInput.value = settings.deadline_time;
+            } catch (error) {
+                showMessage(settingsMessageDiv, `載入設定失敗: ${error.message}`, 'error');
+            }
+        }
+
+        async function saveSettings() {
+            if (!checkBackendUrl()) return;
+            const deadlineTime = deadlineTimeInput.value;
+            if (!deadlineTime) {
+                showMessage(settingsMessageDiv, '請選擇一個有效的截止時間', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${backendUrl}/admin/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deadline_time: deadlineTime })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '未知錯誤');
+                showMessage(settingsMessageDiv, '設定儲存成功！', 'success');
+            } catch (error) {
+                showMessage(settingsMessageDiv, `儲存設定失敗: ${error.message}`, 'error');
+            }
+        }
+
         dailyMenuForm.addEventListener('keydown', function(event) {
             if (event.key === 'Enter') {
                 const activeElement = document.activeElement;
                 if (activeElement.tagName === 'INPUT' || activeElement.tagName === 'SELECT') {
-                    event.preventDefault(); // 防止 Enter 鍵觸發預設行為 (例如提交表單)
-                    
-                    // 找出表單中所有可以互動的元素
+                    event.preventDefault();
                     const formElements = Array.from(dailyMenuForm.querySelectorAll('input, select'));
                     const currentIndex = formElements.indexOf(activeElement);
                     const nextElement = formElements[currentIndex + 1];
-                    
                     if (nextElement) {
-                        nextElement.focus(); // 如果有下一個元素，就將焦點移過去
-                    } else {
-                         // 如果是最後一個元素，可以選擇性地觸發儲存按鈕
-                         // document.querySelector('.refresh-btn[style*="background-color: #28a745"]').click();
+                        nextElement.focus();
                     }
                 }
             }
@@ -325,6 +371,7 @@
             loadUsers();
             loadOrders();
             loadDailyMenu();
+            loadSettings();
         };
 
         menuDateSelector.addEventListener('change', loadDailyMenu);
