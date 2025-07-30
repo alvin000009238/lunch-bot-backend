@@ -1,17 +1,12 @@
 {
   "name": "lunch-bot-backend",
   "version": "1.0.0",
-<<<<<<< HEAD
   "description": "LINE bot for lunch ordering",
-=======
-  "description": "",
->>>>>>> a712269d26e67f4fe8b6490e56ae2fa6b1ba82f1
   "main": "index.js",
   "scripts": {
     "start": "echo \"--- 正在檢查 PORT 變數 --- \" && echo \"Railway 提供的 PORT 是: $PORT\" && echo \"--- 準備啟動應用程式 ---\" && node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-<<<<<<< HEAD
   "keywords": [
     "line",
     "bot",
@@ -21,19 +16,8 @@
   "license": "ISC",
   "dependencies": {
     "@line/bot-sdk": "^9.2.2",
-=======
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
->>>>>>> a712269d26e67f4fe8b6490e56ae2fa6b1ba82f1
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "@line/bot-sdk": "^9.2.2",
     "pg": "^8.11.5"
   }
 }
-<<<<<<< HEAD
-=======
-
->>>>>>> a712269d26e67f4fe8b6490e56ae2fa6b1ba82f1
