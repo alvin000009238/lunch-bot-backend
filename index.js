@@ -1,10 +1,10 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，修正 Flex Message 按鈕樣式錯誤)
+ * == 檔案: index.js (已更新，加入託管 admin.html 的功能)
  * =================================================================
- * 1. 在 showOrdersByDate 函式中，將無效的按鈕樣式 'danger' 修改為合法的 'primary' 並搭配 color 屬性來顯示紅色。
- * 2. (保留) 增加詳細的錯誤日誌記錄。
- * 3. (保留) 移除 postback action 中的 displayText 屬性。
+ * 1. 新增 /admin 路由，讓使用者可以透過瀏覽器直接存取後台管理頁面。
+ * 2. (保留) 修正 Flex Message 按鈕樣式錯誤。
+ * 3. (保留) 增加詳細的錯誤日誌記錄。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -12,6 +12,7 @@ const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
 const cors = require('cors');
 const cron = require('node-cron');
+const path = require('path'); // ✨ 新增：引入 path 模組
 
 // --- 2. 設定 ---
 const config = {
@@ -41,11 +42,9 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     .then((result) => res.json(result))
     .catch((err) => {
       console.error('處理事件時發生錯誤。');
-      // 檢查是否有來自 LINE API 的原始錯誤資訊
       if (err.originalError && err.originalError.response && err.originalError.response.data) {
         console.error('LINE API 錯誤詳情:', JSON.stringify(err.originalError.response.data, null, 2));
       } else {
-        // 如果沒有，就印出完整的錯誤物件
         console.error('完整錯誤物件:', err);
       }
       res.status(500).end();
@@ -55,6 +54,15 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 
 app.use(cors());
 app.use(express.json());
+
+// ==========================================================
+// == ✨ 新增：託管後台管理頁面 ✨
+// == 當使用者訪問 /admin 時，回傳 admin.html 檔案
+// ==========================================================
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
 
 // --- 輔助函式：從資料庫取得設定 ---
 async function getSetting(key, defaultValue) {
@@ -592,10 +600,6 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
             const items = (order.items || '未知商品').length > 15 ? (order.items || '未知商品').substring(0, 12) + '...' : (order.items || '未知商品');
             const buttonText = `${items} (${parseFloat(order.total_amount).toFixed(0)}元)`;
             
-            // ==========================================================
-            // == ✨ 修正點 ✨
-            // == 將無效的 style: 'danger' 改為 style: 'primary' 並加上 color
-            // ==========================================================
             return {
                 type: 'button',
                 style: 'primary',
