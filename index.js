@@ -1,9 +1,10 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，修正取消流程中的 displayText 問題)
+ * == 檔案: index.js (已更新，增加詳細錯誤日誌)
  * =================================================================
- * 1. 在 showOrdersByDate 函式中，移除建立「取消訂單」按鈕時的 displayText 屬性，避免 replyToken 衝突。
- * 2. 在結算流程中，將成功的訂單狀態從 'preparing' 更新為 'finished'。
+ * 1. 在主 Webhook 端點增加詳細的錯誤日誌記錄，以便捕捉 LINE API 回傳的具體錯誤原因。
+ * 2. (保留) 移除 postback action 中的 displayText 屬性，避免 replyToken 衝突。
+ * 3. (保留) 在結算流程中，將成功的訂單狀態從 'preparing' 更新為 'finished'。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -35,12 +36,26 @@ const client = new line.Client(config);
 // --- 5. 建立 API ---
 app.get('/', (req, res) => { res.send('伺服器已啟動！'); });
 
+// ==========================================================
+// == ✨ 修正點 ✨
+// == 更新了 .catch 區塊來印出更詳細的錯誤資訊
+// ==========================================================
 app.post('/webhook', line.middleware(config), (req, res) => {
-  Promise.all(req.body.events.map(handleEvent)).then((result) => res.json(result)).catch((err) => {
-    console.error(err);
-    res.status(500).end();
-  });
+  Promise.all(req.body.events.map(handleEvent))
+    .then((result) => res.json(result))
+    .catch((err) => {
+      console.error('處理事件時發生錯誤。');
+      // 檢查是否有來自 LINE API 的原始錯誤資訊
+      if (err.originalError && err.originalError.response && err.originalError.response.data) {
+        console.error('LINE API 錯誤詳情:', JSON.stringify(err.originalError.response.data, null, 2));
+      } else {
+        // 如果沒有，就印出完整的錯誤物件
+        console.error('完整錯誤物件:', err);
+      }
+      res.status(500).end();
+    });
 });
+
 
 app.use(cors());
 app.use(express.json());
@@ -330,7 +345,6 @@ async function handleEvent(event) {
     if (userMessage === '取消') return askToCancelOrder(userId, event.replyToken);
     
     // 如果沒有任何關鍵字匹配，就不回覆，以避免搶走 postback 的 replyToken
-    // return client.replyMessage(event.replyToken, { type: 'text', text: `您好，請輸入「菜單」、「餘額」或「取消」。` });
     return Promise.resolve(null);
 }
 
@@ -582,10 +596,6 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
             const items = (order.items || '未知商品').length > 15 ? (order.items || '未知商品').substring(0, 12) + '...' : (order.items || '未知商品');
             const buttonText = `${items} (${parseFloat(order.total_amount).toFixed(0)}元)`;
             
-            // ==========================================================
-            // == ✨ 修正點 ✨
-            // == 移除了下面 action 物件中的 displayText 屬性
-            // ==========================================================
             return {
                 type: 'button', style: 'danger', height: 'sm', margin: 'sm',
                 action: { type: 'postback', label: buttonText, data: `action=cancel_order&orderId=${order.id}` }
