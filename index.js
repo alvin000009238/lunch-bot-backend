@@ -1,10 +1,10 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，增加詳細錯誤日誌)
+ * == 檔案: index.js (已更新，修正 Flex Message 按鈕樣式錯誤)
  * =================================================================
- * 1. 在主 Webhook 端點增加詳細的錯誤日誌記錄，以便捕捉 LINE API 回傳的具體錯誤原因。
- * 2. (保留) 移除 postback action 中的 displayText 屬性，避免 replyToken 衝突。
- * 3. (保留) 在結算流程中，將成功的訂單狀態從 'preparing' 更新為 'finished'。
+ * 1. 在 showOrdersByDate 函式中，將無效的按鈕樣式 'danger' 修改為合法的 'primary' 並搭配 color 屬性來顯示紅色。
+ * 2. (保留) 增加詳細的錯誤日誌記錄。
+ * 3. (保留) 移除 postback action 中的 displayText 屬性。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -36,10 +36,6 @@ const client = new line.Client(config);
 // --- 5. 建立 API ---
 app.get('/', (req, res) => { res.send('伺服器已啟動！'); });
 
-// ==========================================================
-// == ✨ 修正點 ✨
-// == 更新了 .catch 區塊來印出更詳細的錯誤資訊
-// ==========================================================
 app.post('/webhook', line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then((result) => res.json(result))
@@ -596,8 +592,16 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
             const items = (order.items || '未知商品').length > 15 ? (order.items || '未知商品').substring(0, 12) + '...' : (order.items || '未知商品');
             const buttonText = `${items} (${parseFloat(order.total_amount).toFixed(0)}元)`;
             
+            // ==========================================================
+            // == ✨ 修正點 ✨
+            // == 將無效的 style: 'danger' 改為 style: 'primary' 並加上 color
+            // ==========================================================
             return {
-                type: 'button', style: 'danger', height: 'sm', margin: 'sm',
+                type: 'button',
+                style: 'primary',
+                color: '#dc3545', // 紅色
+                height: 'sm',
+                margin: 'sm',
                 action: { type: 'postback', label: buttonText, data: `action=cancel_order&orderId=${order.id}` }
             };
         });
