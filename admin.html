@@ -5,28 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>午餐訂餐系統 - 後台管理</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 2rem; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 2rem; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
         .container { background-color: #ffffff; padding: 2rem; border-radius: 10px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); width: 100%; max-width: 800px; margin: 1rem auto; }
         h1, h2 { color: #333; text-align: center; margin-bottom: 1.5rem; }
         label { display: block; margin-bottom: 0.5rem; color: #555; font-weight: 600; }
         input, select { width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; font-size: 1rem; }
-        button { padding: 0.85rem; background-color: #007bff; color: white; border: none; border-radius: 5px; font-size: 1.1rem; font-weight: bold; cursor: pointer; transition: background-color 0.3s ease; }
+        button { padding: 0.85rem; background-color: #007bff; color: white; border: none; border-radius: 5px; font-size: 1.1rem; font-weight: bold; cursor: pointer; transition: background-color 0.3s ease; width: 100%; }
         button:hover { background-color: #0056b3; }
         .message-box { margin-top: 1.5rem; padding: 1rem; border-radius: 5px; text-align: center; font-weight: bold; display: none; }
         .message-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .message-error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        
+        /* 登入表單樣式 */
+        #login-container { max-width: 400px; }
+        #login-form .form-group { margin-bottom: 1.5rem; }
+        
+        /* 主內容樣式 */
+        #main-content { display: none; /* 預設隱藏 */ }
         #user-list { list-style-type: none; padding: 0; }
         #user-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #eee; }
         .user-info { flex-grow: 1; }
         .user-deposit { display: flex; align-items: center; margin-top: 0.5rem; width: 100%; }
         @media (min-width: 600px) { .user-deposit { width: auto; margin-top: 0; } }
         .user-deposit input { width: 80px; margin-right: 0.5rem; }
+        .user-deposit button { width: auto; }
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
         th, td { border: 1px solid #ddd; padding: 0.75rem; text-align: left; word-break: break-word; }
         th { background-color: #f2f2f2; font-weight: 600; }
         .section-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
         .section-header > div { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-        .refresh-btn { padding: 0.5rem 1rem; font-size: 0.9rem; }
+        .refresh-btn { padding: 0.5rem 1rem; font-size: 0.9rem; width: auto; }
         .menu-input-grid { display: grid; grid-template-columns: 60px 1fr auto; gap: 10px; align-items: center; margin-bottom: 10px; padding: 10px; border-radius: 5px; }
         .menu-input-grid.combo-eligible { background-color: #e3f2fd; }
         .menu-input-grid label { margin-bottom: 0; font-size: 1.1rem; font-weight: bold; }
@@ -34,75 +42,96 @@
         .price-group select { flex-grow: 1; }
         .price-group input { width: 80px; }
         .settings-grid { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+        .settings-grid button { width: auto; }
         
-        /* 訂單狀態樣式 */
         .status-finished { background-color: #d4edda; color: #155724; }
         .status-preparing { background-color: #fff3cd; color: #856404; }
         .status-cancelled_by_system, .status-cancelled_by_user { background-color: #f8d7da; color: #721c24; text-decoration: line-through; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="section-header">
-            <h2>每日菜單管理</h2>
-            <div>
-                <input type="date" id="menu-date-selector">
-                <button onclick="saveDailyMenu()" class="refresh-btn" style="background-color: #28a745;">儲存當日菜單</button>
+    <!-- 登入表單容器 -->
+    <div id="login-container" class="container">
+        <h2>後台管理登入</h2>
+        <form id="login-form" onsubmit="handleLogin(event)">
+            <div class="form-group">
+                <label for="username">使用者名稱</label>
+                <input type="text" id="username" required>
             </div>
-        </div>
-        <div id="daily-menu-form"></div>
-        <div id="daily-menu-message" class="message-box"></div>
+            <div class="form-group">
+                <label for="password">密碼</label>
+                <input type="password" id="password" required>
+            </div>
+            <button type="submit">登入</button>
+        </form>
+        <div id="login-message" class="message-box"></div>
     </div>
 
-    <div class="container">
-        <h2>使用者管理與儲值</h2>
-        <ul id="user-list"></ul>
-        <div id="user-message" class="message-box"></div>
-    </div>
-
-    <div class="container">
-        <div class="section-header">
-            <h2>訂單列表</h2>
-            <div>
-                <input type="date" id="order-date-filter">
-                <button onclick="loadOrders()" class="refresh-btn">查詢訂單</button>
+    <!-- 主內容容器 (預設隱藏) -->
+    <div id="main-content">
+        <div class="container">
+            <div class="section-header">
+                <h2>每日菜單管理</h2>
+                <div>
+                    <input type="date" id="menu-date-selector">
+                    <button onclick="saveDailyMenu()" class="refresh-btn" style="background-color: #28a745;">儲存當日菜單</button>
+                </div>
             </div>
+            <div id="daily-menu-form"></div>
+            <div id="daily-menu-message" class="message-box"></div>
         </div>
-        <table id="order-table">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>訂購人</th>
-                    <th>品項</th>
-                    <th>金額</th>
-                    <th>狀態</th>
-                    <th>用餐日</th>
-                    <th>下單時間</th>
-                </tr>
-            </thead>
-            <tbody id="order-list"></tbody>
-        </table>
-        <div id="order-message" class="message-box"></div>
-    </div>
 
-    <div class="container">
-        <h2>系統設定</h2>
-        <div id="settings-form">
-             <div class="settings-grid">
-                <label for="deadline-time">訂單截止時間</label>
-                <input type="time" id="deadline-time">
-                <button onclick="saveSettings()" style="background-color: #17a2b8;">儲存設定</button>
-            </div>
+        <div class="container">
+            <h2>使用者管理與儲值</h2>
+            <ul id="user-list"></ul>
+            <div id="user-message" class="message-box"></div>
         </div>
-        <div id="settings-message" class="message-box"></div>
+
+        <div class="container">
+            <div class="section-header">
+                <h2>訂單列表</h2>
+                <div>
+                    <input type="date" id="order-date-filter">
+                    <button onclick="loadOrders()" class="refresh-btn">查詢訂單</button>
+                </div>
+            </div>
+            <table id="order-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>訂購人</th>
+                        <th>品項</th>
+                        <th>金額</th>
+                        <th>狀態</th>
+                        <th>用餐日</th>
+                        <th>下單時間</th>
+                    </tr>
+                </thead>
+                <tbody id="order-list"></tbody>
+            </table>
+            <div id="order-message" class="message-box"></div>
+        </div>
+
+        <div class="container">
+            <h2>系統設定</h2>
+            <div id="settings-form">
+                 <div class="settings-grid">
+                    <label for="deadline-time">訂單截止時間</label>
+                    <input type="time" id="deadline-time">
+                    <button onclick="saveSettings()" style="background-color: #17a2b8;">儲存設定</button>
+                </div>
+            </div>
+            <div id="settings-message" class="message-box"></div>
+        </div>
     </div>
 
     <script>
-        // ==========================================================
-        // == ✨ 重要 ✨
-        // == 請將下面的網址換成您在 Google Cloud Run 上的服務網址
-        // ==========================================================
-        const backendUrl = 'https://line-bot-backend-167812150750.asia-east1.run.app';
+        const backendUrl = 'https://your-cloud-run-service-url.a.run.app'; // ✨ 請記得更新此網址
+        
+        // DOM 元素
+        const loginContainer = document.getElementById('login-container');
+        const mainContent = document.getElementById('main-content');
+        const loginMessageDiv = document.getElementById('login-message');
         
         const menuDateSelector = document.getElementById('menu-date-selector');
         const dailyMenuForm = document.getElementById('daily-menu-form');
@@ -115,35 +144,75 @@
         const settingsMessageDiv = document.getElementById('settings-message');
         const deadlineTimeInput = document.getElementById('deadline-time');
 
+        // 登入處理函式
+        async function handleLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${backendUrl}/admin/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (response.ok) {
+                    // 登入成功
+                    sessionStorage.setItem('isLoggedIn', 'true'); // 使用 sessionStorage，關閉分頁後需重新登入
+                    showMainContent();
+                } else {
+                    // 登入失敗
+                    const result = await response.json();
+                    showMessage(loginMessageDiv, result.error || '登入失敗', 'error');
+                }
+            } catch (error) {
+                showMessage(loginMessageDiv, `發生錯誤: ${error.message}`, 'error');
+            }
+        }
+
+        // 顯示主內容
+        function showMainContent() {
+            loginContainer.style.display = 'none';
+            mainContent.style.display = 'block';
+            document.body.style.alignItems = 'flex-start'; // 讓內容從頂部開始
+            document.body.style.justifyContent = 'center';
+
+            // 載入後台資料
+            const today = new Date().toLocaleDateString('en-CA');
+            menuDateSelector.value = today;
+            orderDateFilter.value = today;
+            
+            loadUsers();
+            loadOrders();
+            loadDailyMenu();
+            loadSettings();
+        }
+
+        // 頁面載入時檢查登入狀態
+        window.onload = () => {
+            if (sessionStorage.getItem('isLoggedIn') === 'true') {
+                showMainContent();
+            }
+        };
+        
+        // (此處省略了所有 load... 和 save... 的函式，因為它們不需要修改)
+        // (請保留您原始檔案中的所有相關函式)
         function showMessage(element, text, type) {
             element.textContent = text;
             element.className = `message-box message-${type}`;
             element.style.display = 'block';
             setTimeout(() => { element.style.display = 'none'; }, 3000);
         }
-
         function generateMenuInputForm(menuItems = []) {
             dailyMenuForm.innerHTML = '';
             const priceOptions = `<option value="65">65元</option><option value="70">70元</option><option value="75">75元</option><option value="custom">手動</option>`;
-            
             for (let i = 1; i <= 11; i++) {
                 const item = menuItems.find(m => m.display_order === i) || {};
                 const isComboEligible = i > 8;
                 const labelText = isComboEligible ? `套餐 ${i-8}` : `單點 ${i}`;
-                const itemHtml = `
-                    <div class="menu-input-grid ${isComboEligible ? 'combo-eligible' : ''}">
-                        <label for="name-${i}">${labelText}</label>
-                        <input type="text" id="name-${i}" placeholder="品項名稱" value="${item.name || ''}">
-                        <div class="price-group">
-                            <select id="price-select-${i}" onchange="togglePriceInput(${i})">
-                                ${priceOptions}
-                            </select>
-                            <input type="number" id="price-input-${i}" placeholder="價格" style="display:none;" value="${item.price || ''}">
-                        </div>
-                    </div>
-                `;
+                const itemHtml = `<div class="menu-input-grid ${isComboEligible ? 'combo-eligible' : ''}"><label for="name-${i}">${labelText}</label><input type="text" id="name-${i}" placeholder="品項名稱" value="${item.name || ''}"><div class="price-group"><select id="price-select-${i}" onchange="togglePriceInput(${i})">${priceOptions}</select><input type="number" id="price-input-${i}" placeholder="價格" style="display:none;" value="${item.price || ''}"></div></div>`;
                 dailyMenuForm.insertAdjacentHTML('beforeend', itemHtml);
-                
                 const priceSelect = document.getElementById(`price-select-${i}`);
                 const priceInput = document.getElementById(`price-input-${i}`);
                 if (item.price && ![65, 70, 75].includes(parseFloat(item.price))) {
@@ -154,17 +223,14 @@
                 }
             }
         }
-
         function togglePriceInput(index) {
             const priceSelect = document.getElementById(`price-select-${index}`);
             const priceInput = document.getElementById(`price-input-${index}`);
             priceInput.style.display = priceSelect.value === 'custom' ? 'block' : 'none';
         }
-
         async function loadDailyMenu() {
             const selectedDate = menuDateSelector.value;
             if (!selectedDate) return;
-
             try {
                 const response = await fetch(`${backendUrl}/admin/daily-menu?date=${selectedDate}`);
                 if (!response.ok) throw new Error('無法取得菜單');
@@ -175,33 +241,21 @@
                 generateMenuInputForm();
             }
         }
-
         async function saveDailyMenu() {
             const selectedDate = menuDateSelector.value;
             const menuItems = [];
-
             for (let i = 1; i <= 11; i++) {
                 const name = document.getElementById(`name-${i}`).value;
                 const priceSelect = document.getElementById(`price-select-${i}`);
-                let price = priceSelect.value === 'custom' 
-                    ? parseFloat(document.getElementById(`price-input-${i}`).value)
-                    : parseFloat(priceSelect.value);
-
+                let price = priceSelect.value === 'custom' ? parseFloat(document.getElementById(`price-input-${i}`).value) : parseFloat(priceSelect.value);
                 if (name && price > 0) {
-                    menuItems.push({
-                        name: name,
-                        price: price,
-                        is_combo_eligible: i > 8,
-                        display_order: i
-                    });
+                    menuItems.push({ name: name, price: price, is_combo_eligible: i > 8, display_order: i });
                 }
             }
-
             if (menuItems.length === 0) {
                 showMessage(dailyMenuMessageDiv, '請至少輸入一項餐點', 'error');
                 return;
             }
-
             try {
                 const response = await fetch(`${backendUrl}/admin/daily-menu`, {
                     method: 'POST',
@@ -215,7 +269,6 @@
                 showMessage(dailyMenuMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
-        
         async function loadUsers() {
             try {
                 const response = await fetch(`${backendUrl}/admin/users`);
@@ -228,16 +281,7 @@
                 }
                 users.forEach(user => {
                     const li = document.createElement('li');
-                    li.innerHTML = `
-                        <div class="user-info">
-                            <strong>${user.display_name}</strong> (ID: ${user.id})<br>
-                            餘額: $<span id="balance-${user.id}">${parseFloat(user.balance).toFixed(2)}</span>
-                        </div>
-                        <div class="user-deposit">
-                            <input type="number" placeholder="金額" id="amount-${user.id}" min="1">
-                            <button onclick="deposit(${user.id})">儲值</button>
-                        </div>
-                    `;
+                    li.innerHTML = `<div class="user-info"><strong>${user.display_name}</strong> (ID: ${user.id})<br>餘額: $<span id="balance-${user.id}">${parseFloat(user.balance).toFixed(2)}</span></div><div class="user-deposit"><input type="number" placeholder="金額" id="amount-${user.id}" min="1"><button onclick="deposit(${user.id})">儲值</button></div>`;
                     userList.appendChild(li);
                 });
             } catch (error) {
@@ -266,7 +310,6 @@
                 showMessage(userMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
-        
         async function loadOrders() {
             const selectedDate = orderDateFilter.value;
             if (!selectedDate) {
@@ -286,26 +329,14 @@
                     const tr = document.createElement('tr');
                     const orderForDate = new Date(order.order_for_date).toLocaleDateString('zh-TW');
                     const orderTime = new Date(order.created_at).toLocaleString('zh-TW', { hour12: false });
-                    
-                    // 根據訂單狀態給予不同的 CSS class
                     const statusClass = `status-${order.status.toLowerCase()}`;
-                    
-                    tr.innerHTML = `
-                        <td>${order.id}</td>
-                        <td>${order.display_name}</td>
-                        <td>${order.items}</td>
-                        <td>$${parseFloat(order.total_amount).toFixed(2)}</td>
-                        <td class="${statusClass}">${order.status}</td>
-                        <td>${orderForDate}</td>
-                        <td>${orderTime}</td>
-                    `;
+                    tr.innerHTML = `<td>${order.id}</td><td>${order.display_name}</td><td>${order.items}</td><td>$${parseFloat(order.total_amount).toFixed(2)}</td><td class="${statusClass}">${order.status}</td><td>${orderForDate}</td><td>${orderTime}</td>`;
                     orderList.appendChild(tr);
                 });
             } catch (error) {
                 showMessage(orderMessageDiv, `載入訂單失敗: ${error.message}`, 'error');
             }
         }
-        
         async function loadSettings() {
             try {
                 const response = await fetch(`${backendUrl}/admin/settings`);
@@ -316,14 +347,12 @@
                 showMessage(settingsMessageDiv, `載入設定失敗: ${error.message}`, 'error');
             }
         }
-
         async function saveSettings() {
             const deadlineTime = deadlineTimeInput.value;
             if (!deadlineTime) {
                 showMessage(settingsMessageDiv, '請選擇一個有效的截止時間', 'error');
                 return;
             }
-
             try {
                 const response = await fetch(`${backendUrl}/admin/settings`, {
                     method: 'POST',
@@ -337,7 +366,6 @@
                 showMessage(settingsMessageDiv, `儲存設定失敗: ${error.message}`, 'error');
             }
         }
-
         dailyMenuForm.addEventListener('keydown', function(event) {
             if (event.key === 'Enter') {
                 const activeElement = document.activeElement;
@@ -352,18 +380,6 @@
                 }
             }
         });
-
-        window.onload = () => {
-            const today = new Date().toLocaleDateString('en-CA');
-            menuDateSelector.value = today;
-            orderDateFilter.value = today;
-            
-            loadUsers();
-            loadOrders();
-            loadDailyMenu();
-            loadSettings();
-        };
-
         menuDateSelector.addEventListener('change', loadDailyMenu);
     </script>
 </body>
