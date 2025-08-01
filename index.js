@@ -1,10 +1,10 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，加入託管 admin.html 的功能)
+ * == 檔案: index.js (已更新，適用於 Google Cloud Run)
  * =================================================================
- * 1. 新增 /admin 路由，讓使用者可以透過瀏覽器直接存取後台管理頁面。
- * 2. (保留) 修正 Flex Message 按鈕樣式錯誤。
- * 3. (保留) 增加詳細的錯誤日誌記錄。
+ * 1. 修改 app.listen，明確指定監聽 host 為 '0.0.0.0'，以符合 Cloud Run 的要求。
+ * 2. (保留) 託管 admin.html 的功能。
+ * 3. (保留) 修正 Flex Message 按鈕樣式錯誤。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -12,7 +12,7 @@ const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
 const cors = require('cors');
 const cron = require('node-cron');
-const path = require('path'); // ✨ 新增：引入 path 模組
+const path = require('path');
 
 // --- 2. 設定 ---
 const config = {
@@ -20,7 +20,7 @@ const config = {
   channelSecret: process.env.CHANNEL_SECRET
 };
 
-const connectionString = process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL;
+const connectionString = process.env.DATABASE_URL; // Cloud Run 會透過環境變數提供
 const pool = new Pool({
   connectionString: connectionString,
   ssl: {
@@ -55,10 +55,6 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 app.use(cors());
 app.use(express.json());
 
-// ==========================================================
-// == ✨ 新增：託管後台管理頁面 ✨
-// == 當使用者訪問 /admin 時，回傳 admin.html 檔案
-// ==========================================================
 app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
@@ -156,7 +152,6 @@ async function runDailySettlement() {
             await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
         }
 
-        // (新增) 將所有成功結算的訂單狀態更新為 'finished'
         const updateResult = await dbClient.query(
             "UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'",
             [settlementDate]
@@ -348,11 +343,12 @@ async function handleEvent(event) {
     if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(userId, event.replyToken);
     if (userMessage === '取消') return askToCancelOrder(userId, event.replyToken);
     
-    // 如果沒有任何關鍵字匹配，就不回覆，以避免搶走 postback 的 replyToken
     return Promise.resolve(null);
 }
 
 // --- 7. 處理各種動作的輔助函式 ---
+// (此處省略了所有 handle... 函式的內容，因為它們不需要修改)
+// (請保留您原始檔案中的所有 handle... 函式)
 async function handleFollowEvent(userId, replyToken) {
     try {
         const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
@@ -692,12 +688,17 @@ async function handleCancelOrder(userId, orderId, replyToken) {
 
 
 // --- 8. 啟動伺服器 ---
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`伺服器正在 http://localhost:${port} 上成功運行`);
+// ==========================================================
+// == ✨ 修正點 ✨
+// == 這是適用於 Google Cloud Run 的啟動方式
+// ==========================================================
+const port = process.env.PORT || 8080;
+const host = '0.0.0.0';
+
+app.listen(port, host, () => {
+  console.log(`伺服器正在 ${host}:${port} 上成功運行`);
   
   // 啟動內建排程器
-  // 每分鐘檢查一次
   cron.schedule('* * * * *', () => {
     console.log(`[內建排程] 每分鐘檢查一次，當前時間: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })}`);
     runDailySettlement();
