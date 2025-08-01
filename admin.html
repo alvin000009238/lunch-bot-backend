@@ -126,7 +126,11 @@
     </div>
 
     <script>
-        const backendUrl = 'https://your-cloud-run-service-url.a.run.app'; // ✨ 請記得更新此網址
+        // ==========================================================
+        // == ✨ 重要 ✨
+        // == 請將下面的網址換成您在 Google Cloud Run 上的服務網址
+        // ==========================================================
+        const backendUrl = 'https://line-bot-backend-167812150750.asia-east1.run.app';
         
         // DOM 元素
         const loginContainer = document.getElementById('login-container');
@@ -196,14 +200,13 @@
             }
         };
         
-        // (此處省略了所有 load... 和 save... 的函式，因為它們不需要修改)
-        // (請保留您原始檔案中的所有相關函式)
         function showMessage(element, text, type) {
             element.textContent = text;
             element.className = `message-box message-${type}`;
             element.style.display = 'block';
             setTimeout(() => { element.style.display = 'none'; }, 3000);
         }
+
         function generateMenuInputForm(menuItems = []) {
             dailyMenuForm.innerHTML = '';
             const priceOptions = `<option value="65">65元</option><option value="70">70元</option><option value="75">75元</option><option value="custom">手動</option>`;
@@ -223,11 +226,13 @@
                 }
             }
         }
+
         function togglePriceInput(index) {
             const priceSelect = document.getElementById(`price-select-${index}`);
             const priceInput = document.getElementById(`price-input-${index}`);
             priceInput.style.display = priceSelect.value === 'custom' ? 'block' : 'none';
         }
+
         async function loadDailyMenu() {
             const selectedDate = menuDateSelector.value;
             if (!selectedDate) return;
@@ -241,6 +246,7 @@
                 generateMenuInputForm();
             }
         }
+
         async function saveDailyMenu() {
             const selectedDate = menuDateSelector.value;
             const menuItems = [];
@@ -269,6 +275,7 @@
                 showMessage(dailyMenuMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
+        
         async function loadUsers() {
             try {
                 const response = await fetch(`${backendUrl}/admin/users`);
@@ -288,6 +295,7 @@
                 showMessage(userMessageDiv, `載入使用者失敗: ${error.message}`, 'error');
             }
         }
+
         async function deposit(userId) {
             const amountInput = document.getElementById(`amount-${userId}`);
             const amount = parseFloat(amountInput.value);
@@ -310,6 +318,7 @@
                 showMessage(userMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
+        
         async function loadOrders() {
             const selectedDate = orderDateFilter.value;
             if (!selectedDate) {
@@ -337,6 +346,7 @@
                 showMessage(orderMessageDiv, `載入訂單失敗: ${error.message}`, 'error');
             }
         }
+        
         async function loadSettings() {
             try {
                 const response = await fetch(`${backendUrl}/admin/settings`);
@@ -347,6 +357,7 @@
                 showMessage(settingsMessageDiv, `載入設定失敗: ${error.message}`, 'error');
             }
         }
+
         async function saveSettings() {
             const deadlineTime = deadlineTimeInput.value;
             if (!deadlineTime) {
@@ -366,6 +377,7 @@
                 showMessage(settingsMessageDiv, `儲存設定失敗: ${error.message}`, 'error');
             }
         }
+
         dailyMenuForm.addEventListener('keydown', function(event) {
             if (event.key === 'Enter') {
                 const activeElement = document.activeElement;
