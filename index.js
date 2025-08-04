@@ -449,7 +449,8 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         successText += `\n金額: ${totalAmount}\n剩餘餘額: ${newBalance.toFixed(0)}`;
 
         if (newBalance < 0) {
-            successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在今日 ${deadlineTime} 前儲值，否則訂單將會被取消。`;
+            // ✨ [文字修改] 更新提示文字
+            successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在訂單截止(${deadlineTime})前儲值，否則訂單將會被取消。`;
         }
         
         return client.replyMessage(replyToken, { type: 'text', text: successText });
