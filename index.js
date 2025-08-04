@@ -2,17 +2,13 @@
  * =================================================================
  * == 檔案: index.js
  * =================================================================
- * ✨ 更新重點 (根據最新需求調整) ✨
- * 1.  恢復訂單處理邏輯 (handleOrderAction):
- * - 允許使用者在餘額不足時下訂單。
- * - 訂單成立後，若餘額變為負數，會發送一則提醒訊息，要求使用者在結算前儲值。
+ * ✨ 更新重點 (修正價格計算錯誤) ✨
+ * 1.  修正訂單處理邏輯 (handleOrderAction):
+ * - 新增判斷 `item.is_combo_eligible`。
+ * - 只有當品項是「可升級套餐」時，才會根據使用者是否選擇套餐來調整價格。
+ * - 對於一般的單點品項，直接採用資料庫中的定價，不再錯誤地扣除15元。
  *
- * 2.  恢復每日結算邏輯 (runDailySettlement):
- * - 在每日結算時，會檢查所有使用者的餘額。
- * - 如果有使用者的餘額為負數，系統將自動取消他們當日所有「準備中」的訂單，並退還款項。
- * - 這個邏輯與您最初的版本一致，確保了「先下單、後付款」的彈性。
- *
- * 這些變更恢復了您期望的業務流程，同時提供了更清晰的使用者提示。
+ * 這個修改確保了所有品項的計價都符合預期。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -72,23 +68,14 @@ app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
-// ==========================================================
-// == ✨ 新增：後台登入 API 端點 ✨
-// ==========================================================
 app.post('/admin/login', (req, res) => {
     const { username, password } = req.body;
-
-    // 從環境變數讀取管理員帳號密碼
     const adminUsername = process.env.ADMIN_USERNAME;
     const adminPassword = process.env.ADMIN_PASSWORD;
-
-    // 檢查環境變數是否已設定
     if (!adminUsername || !adminPassword) {
         console.error('管理員帳號密碼未在環境變數中設定！');
         return res.status(500).json({ error: '伺服器設定不完整' });
     }
-
-    // 驗證帳號密碼
     if (username === adminUsername && password === adminPassword) {
         res.status(200).json({ message: '登入成功' });
     } else {
@@ -96,8 +83,6 @@ app.post('/admin/login', (req, res) => {
     }
 });
 
-
-// --- 輔助函式：從資料庫取得設定 ---
 async function getSetting(key, defaultValue) {
     try {
         const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -111,9 +96,6 @@ async function getSetting(key, defaultValue) {
     }
 }
 
-// ==========================================================
-// == ✨ 已恢復：每日結算函式 ✨
-// ==========================================================
 async function runDailySettlement() {
     const now = new Date();
     const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -137,7 +119,6 @@ async function runDailySettlement() {
         }
         console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
         
-        // ✨ [已恢復] 檢查負餘額並取消訂單的邏輯
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
         const cancelledUserIds = new Set();
         if (negativeUsers.rows.length > 0) {
@@ -153,7 +134,6 @@ async function runDailySettlement() {
             }
         }
 
-        // 對被取消訂單的使用者發送通知
         for (const userId of cancelledUserIds) {
             const user = await dbClient.query('SELECT line_user_id FROM users WHERE id = $1', [userId]);
             if(user.rows.length > 0) {
@@ -165,7 +145,6 @@ async function runDailySettlement() {
             }
         }
 
-        // 對成功訂單的使用者發送通知
         const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
         for (const order of successOrders.rows) {
             const message = `您的今日訂單已確認！\n- 品項：${order.items}\n- 您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
@@ -176,7 +155,6 @@ async function runDailySettlement() {
             }
         }
         
-        // 產生並發送給管理員的統計報告
         const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
         let summaryText;
         if (summaryResult.rows.length > 0) {
@@ -202,14 +180,12 @@ async function runDailySettlement() {
             await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
         }
         
-        // 將剩餘的「準備中」訂單更新為「已完成」
         const updateResult = await dbClient.query(
             "UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'",
             [settlementDate]
         );
         console.log(`[結算流程] 已將 ${updateResult.rowCount} 筆 ${settlementDate} 的成功訂單狀態更新為 'finished'`);
         
-        // 記錄今日已結算
         await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
         await dbClient.query('COMMIT');
         console.log(`[結算任務成功] 日期 ${settlementDate} 結算完成`);
@@ -221,8 +197,7 @@ async function runDailySettlement() {
     }
 }
 
-// --- 後台管理 API ---
-
+// --- 後台管理 API (無變更) ---
 app.get('/admin/settings', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM app_settings WHERE key = $1', ['deadline_time']);
@@ -364,6 +339,8 @@ app.get('/admin/orders', async (req, res) => {
         res.status(500).json({ error: '伺服器內部錯誤' });
     }
 });
+
+// --- 主要事件處理函式 (無變更) ---
 async function handleEvent(event) {
     console.log('[處理事件]', `類型: ${event.type}, 使用者 ID: ${event.source.userId}`);
     const userId = event.source.userId;
@@ -411,13 +388,14 @@ async function handleFollowEvent(userId, replyToken) {
 }
 
 // ==========================================================
-// == ✨ 已恢復並優化：訂單處理函式 ✨
+// == ✨ 已修正：訂單處理函式 ✨
 // ==========================================================
 async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, replyToken) {
     const dbClient = await pool.connect();
     try {
         const menuItemResult = await dbClient.query('SELECT * FROM menu_items WHERE id = $1', [menuItemId]);
         if (menuItemResult.rows.length === 0) throw new Error('找不到該餐點');
+        
         const item = menuItemResult.rows[0];
         const orderForDate = new Date(item.menu_date).toLocaleDateString('en-CA');
         const deadlineTime = await getSetting('deadline_time', '09:00');
@@ -425,6 +403,7 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         const now = new Date();
         const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
         const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
+
         if (new Date(orderForDate).toDateString() === taipeiNow.toDateString() && isPastDeadline) {
             return client.replyMessage(replyToken, { type: 'text', text: `抱歉，今日訂餐已於 ${deadlineTime} 截止。` });
         }
@@ -441,12 +420,23 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         }
         const user = userResult.rows[0];
         
-        const price = isCombo ? parseFloat(item.price) : parseFloat(item.price) - COMBO_PRICE;
-        const totalAmount = price;
+        // ✨ [核心修正] 根據品項是否可升級套餐，來決定價格計算方式
+        let totalAmount;
+        if (item.is_combo_eligible) {
+            // 如果品項可升級套餐，則根據 isCombo 決定價格
+            // isCombo=true: 全價 (例如 80元)
+            // isCombo=false: 全價 - 套餐價差 (例如 80 - 15 = 65元)
+            totalAmount = isCombo ? parseFloat(item.price) : parseFloat(item.price) - COMBO_PRICE;
+        } else {
+            // 如果品項是普通單點，價格就是其定價，不做任何加減
+            totalAmount = parseFloat(item.price);
+        }
 
         const orderInsertResult = await dbClient.query('INSERT INTO orders (user_id, total_amount, status, order_for_date) VALUES ($1, $2, $3, $4) RETURNING id', [user.id, totalAmount, 'preparing', orderForDate]);
         const orderId = orderInsertResult.rows[0].id;
-        await dbClient.query('INSERT INTO order_items (order_id, item_name, price_per_item, quantity, is_combo, selected_drink) VALUES ($1, $2, $3, $4, $5, $6)', [orderId, item.name, price, 1, isCombo, selectedDrink]);
+        
+        // 寫入 order_items 時，價格使用計算後的 totalAmount
+        await dbClient.query('INSERT INTO order_items (order_id, item_name, price_per_item, quantity, is_combo, selected_drink) VALUES ($1, $2, $3, $4, $5, $6)', [orderId, item.name, totalAmount, 1, isCombo, selectedDrink]);
         
         const newBalance = parseFloat(user.balance) - totalAmount;
         await dbClient.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, user.id]);
@@ -458,7 +448,6 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         if (isCombo) successText += ` (套餐-${selectedDrink})`;
         successText += `\n金額: ${totalAmount}\n剩餘餘額: ${newBalance.toFixed(0)}`;
 
-        // ✨ [核心修改] 如果餘額為負，則加入提醒訊息
         if (newBalance < 0) {
             successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在今日 ${deadlineTime} 前儲值，否則訂單將會被取消。`;
         }
@@ -472,6 +461,8 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         dbClient.release();
     }
 }
+
+// --- 其他輔助函式 (無變更) ---
 async function handleCheckBalance(userId, replyToken) {
     try {
         const result = await pool.query('SELECT balance FROM users WHERE line_user_id = $1', [userId]);
