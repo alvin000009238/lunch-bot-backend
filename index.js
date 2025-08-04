@@ -38,6 +38,8 @@ const client = new line.Client(config);
 app.get('/', (req, res) => { res.send('伺服器已啟動！'); });
 
 app.post('/webhook', line.middleware(config), (req, res) => {
+  console.log('===== 收到 Webhook 請求 =====');
+  console.log('Request Body:', JSON.stringify(req.body, null, 2));
   Promise.all(req.body.events.map(handleEvent))
     .then((result) => res.json(result))
     .catch((err) => {
@@ -329,12 +331,16 @@ app.get('/admin/orders', async (req, res) => {
     }
 });
 async function handleEvent(event) {
-    console.log('Received event:', JSON.stringify(event, null, 2));
+    console.log('[處理事件]', `類型: ${event.type}, 使用者 ID: ${event.source.userId}`);
     const userId = event.source.userId;
-    if (event.type === 'follow') return handleFollowEvent(userId, event.replyToken);
+    if (event.type === 'follow') {
+        console.log(`[事件] 使用者 ${userId} 加入好友`);
+        return handleFollowEvent(userId, event.replyToken);
+    }
     if (event.type === 'postback') {
         const data = new URLSearchParams(event.postback.data);
         const action = data.get('action');
+        console.log(`[事件] Postback 觸發: ${action}`);
         if (action === 'select_date') return sendMenuFlexMessage(event.replyToken, data.get('date'));
         if (action === 'order') return handleOrderAction(userId, parseInt(data.get('menuItemId')), data.get('isCombo') === 'true', null, event.replyToken);
         if (action === 'select_drink') return handleOrderAction(userId, parseInt(data.get('menuItemId')), true, data.get('drink'), event.replyToken);
@@ -342,18 +348,27 @@ async function handleEvent(event) {
         if (action === 'cancel_order') return handleCancelOrder(userId, parseInt(data.get('orderId')), event.replyToken);
     }
     if (event.type !== 'message' || event.message.type !== 'text') return Promise.resolve(null);
+    
     const userMessage = event.message.text;
+    console.log(`[事件] 使用者 ${userId} 輸入訊息: "${userMessage}"`);
+
     if (userMessage === '菜單' || userMessage === '訂餐') return askForDate(event.replyToken);
     if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(userId, event.replyToken);
     if (userMessage === '取消') return askToCancelOrder(userId, event.replyToken);
+    
     return Promise.resolve(null);
 }
 async function handleFollowEvent(userId, replyToken) {
     try {
         const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
-        if (userCheck.rows.length > 0) return Promise.resolve(null);
+        if (userCheck.rows.length > 0) {
+            console.log(`使用者 ${userId} 已註冊過。`);
+            return Promise.resolve(null);
+        }
+        console.log(`正在為新使用者 ${userId} 建立資料...`);
         const profile = await client.getProfile(userId);
         await pool.query('INSERT INTO users (line_user_id, display_name) VALUES ($1, $2)', [userId, profile.displayName]);
+        console.log(`已成功為 ${profile.displayName} (${userId}) 建立使用者資料。`);
         const welcomeMessage = { type: 'text', text: `歡迎 ${profile.displayName}！您已成功註冊午餐訂餐服務。` };
         return client.replyMessage(replyToken, welcomeMessage);
     } catch (error) {
