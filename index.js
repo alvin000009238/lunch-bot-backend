@@ -1,10 +1,18 @@
 /*
  * =================================================================
- * == 檔案: index.js (已更新，加入後台登入驗證功能)
+ * == 檔案: index.js
  * =================================================================
- * 1. 新增 /admin/login API 端點，用於驗證使用者名稱和密碼。
- * 2. 帳號密碼從環境變數 ADMIN_USERNAME 和 ADMIN_PASSWORD 讀取。
- * 3. (保留) 適用於 Google Cloud Run 的啟動設定。
+ * ✨ 更新重點 (根據最新需求調整) ✨
+ * 1.  恢復訂單處理邏輯 (handleOrderAction):
+ * - 允許使用者在餘額不足時下訂單。
+ * - 訂單成立後，若餘額變為負數，會發送一則提醒訊息，要求使用者在結算前儲值。
+ *
+ * 2.  恢復每日結算邏輯 (runDailySettlement):
+ * - 在每日結算時，會檢查所有使用者的餘額。
+ * - 如果有使用者的餘額為負數，系統將自動取消他們當日所有「準備中」的訂單，並退還款項。
+ * - 這個邏輯與您最初的版本一致，確保了「先下單、後付款」的彈性。
+ *
+ * 這些變更恢復了您期望的業務流程，同時提供了更清晰的使用者提示。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -90,8 +98,6 @@ app.post('/admin/login', (req, res) => {
 
 
 // --- 輔助函式：從資料庫取得設定 ---
-// (此處省略了所有 handle... 和資料庫相關的函式，因為它們不需要修改)
-// (請保留您原始檔案中的所有函式)
 async function getSetting(key, defaultValue) {
     try {
         const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -104,6 +110,10 @@ async function getSetting(key, defaultValue) {
         return defaultValue;
     }
 }
+
+// ==========================================================
+// == ✨ 已恢復：每日結算函式 ✨
+// ==========================================================
 async function runDailySettlement() {
     const now = new Date();
     const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -126,11 +136,15 @@ async function runDailySettlement() {
             return;
         }
         console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
+        
+        // ✨ [已恢復] 檢查負餘額並取消訂單的邏輯
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
         const cancelledUserIds = new Set();
         if (negativeUsers.rows.length > 0) {
             const userIds = negativeUsers.rows.map(u => u.id);
+            console.log(`[結算任務] 發現 ${userIds.length} 位使用者餘額為負，正在檢查其訂單...`);
             const ordersToCancel = await dbClient.query('SELECT id, user_id, total_amount FROM orders WHERE order_for_date = $1 AND user_id = ANY($2::int[]) AND status = $3', [settlementDate, userIds, 'preparing']);
+            
             for (const order of ordersToCancel.rows) {
                 await dbClient.query('UPDATE orders SET status = $1 WHERE id = $2', ['cancelled_by_system', order.id]);
                 await dbClient.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [order.total_amount, order.user_id]);
@@ -138,15 +152,31 @@ async function runDailySettlement() {
                 cancelledUserIds.add(order.user_id);
             }
         }
-        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
-        for (const order of successOrders.rows) {
-            const message = `訂餐成功！\n您今天訂購了：${order.items}\n您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
-            await client.pushMessage(order.line_user_id, { type: 'text', text: message });
-        }
+
+        // 對被取消訂單的使用者發送通知
         for (const userId of cancelledUserIds) {
             const user = await dbClient.query('SELECT line_user_id FROM users WHERE id = $1', [userId]);
-            if(user.rows.length > 0) await client.pushMessage(user.rows[0].line_user_id, { type: 'text', text: '因餘額不足，您今天的訂單已被自動取消，款項已退回。' });
+            if(user.rows.length > 0) {
+                try {
+                    await client.pushMessage(user.rows[0].line_user_id, { type: 'text', text: `很抱歉，因結算時您的帳戶餘額不足，您今日的訂單已被系統自動取消，款項已全數退回您的帳戶。` });
+                } catch (pushError) {
+                    console.error(`[結算任務] 無法傳送取消訊息給使用者 ${userId}`, pushError);
+                }
+            }
         }
+
+        // 對成功訂單的使用者發送通知
+        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
+        for (const order of successOrders.rows) {
+            const message = `您的今日訂單已確認！\n- 品項：${order.items}\n- 您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
+            try {
+                await client.pushMessage(order.line_user_id, { type: 'text', text: message });
+            } catch (pushError) {
+                console.error(`[結算任務] 無法傳送成功訊息給使用者 ${order.user_id} (${order.line_user_id})`, pushError);
+            }
+        }
+        
+        // 產生並發送給管理員的統計報告
         const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
         let summaryText;
         if (summaryResult.rows.length > 0) {
@@ -171,11 +201,15 @@ async function runDailySettlement() {
             const adminIds = admins.rows.map(a => a.line_user_id);
             await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
         }
+        
+        // 將剩餘的「準備中」訂單更新為「已完成」
         const updateResult = await dbClient.query(
             "UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'",
             [settlementDate]
         );
         console.log(`[結算流程] 已將 ${updateResult.rowCount} 筆 ${settlementDate} 的成功訂單狀態更新為 'finished'`);
+        
+        // 記錄今日已結算
         await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
         await dbClient.query('COMMIT');
         console.log(`[結算任務成功] 日期 ${settlementDate} 結算完成`);
@@ -375,6 +409,10 @@ async function handleFollowEvent(userId, replyToken) {
         console.error('處理 follow 事件時發生錯誤', error);
     }
 }
+
+// ==========================================================
+// == ✨ 已恢復並優化：訂單處理函式 ✨
+// ==========================================================
 async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, replyToken) {
     const dbClient = await pool.connect();
     try {
@@ -393,23 +431,38 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         if (item.is_combo_eligible && isCombo && !selectedDrink) {
             return askForDrink(replyToken, menuItemId);
         }
+        
         await dbClient.query('BEGIN');
+        
         const userResult = await dbClient.query('SELECT id, balance FROM users WHERE line_user_id = $1', [userId]);
-        if (userResult.rows.length === 0) throw new Error('找不到使用者');
+        if (userResult.rows.length === 0) {
+            await dbClient.query('ROLLBACK');
+            throw new Error('找不到使用者');
+        }
         const user = userResult.rows[0];
+        
         const price = isCombo ? parseFloat(item.price) : parseFloat(item.price) - COMBO_PRICE;
         const totalAmount = price;
+
         const orderInsertResult = await dbClient.query('INSERT INTO orders (user_id, total_amount, status, order_for_date) VALUES ($1, $2, $3, $4) RETURNING id', [user.id, totalAmount, 'preparing', orderForDate]);
         const orderId = orderInsertResult.rows[0].id;
         await dbClient.query('INSERT INTO order_items (order_id, item_name, price_per_item, quantity, is_combo, selected_drink) VALUES ($1, $2, $3, $4, $5, $6)', [orderId, item.name, price, 1, isCombo, selectedDrink]);
+        
         const newBalance = parseFloat(user.balance) - totalAmount;
         await dbClient.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, user.id]);
         await dbClient.query('INSERT INTO transactions (user_id, type, amount, related_order_id) VALUES ($1, $2, $3, $4)', [user.id, 'payment', totalAmount, orderId]);
+        
         await dbClient.query('COMMIT');
+        
         let successText = `訂購「${item.name}」成功！`;
         if (isCombo) successText += ` (套餐-${selectedDrink})`;
         successText += `\n金額: ${totalAmount}\n剩餘餘額: ${newBalance.toFixed(0)}`;
-        if (newBalance < 0) successText += `\n提醒您目前餘額為負，請記得在今日 ${deadlineTime} 前儲值喔！`;
+
+        // ✨ [核心修改] 如果餘額為負，則加入提醒訊息
+        if (newBalance < 0) {
+            successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在今日 ${deadlineTime} 前儲值，否則訂單將會被取消。`;
+        }
+        
         return client.replyMessage(replyToken, { type: 'text', text: successText });
     } catch (error) {
         await dbClient.query('ROLLBACK');
