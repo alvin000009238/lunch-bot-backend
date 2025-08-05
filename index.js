@@ -3,7 +3,7 @@
  * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
  * ✨ 更新重點 ✨
- * - 移除了所有可能存在的合併衝突標記 (<<<<<<<, =======, >>>>>>>)，解決了 SyntaxError。
+ * - 修正了呼叫 Vision API 的函式名稱，將 `textDetections` 改為 `textDetection`，以解決 TypeError。
  * - 本檔案為包含所有功能的完整、乾淨版本。
  */
 // --- 1. 引入需要的套件 ---
@@ -92,7 +92,8 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
             features: [{ type: 'TEXT_DETECTION' }],
         };
 
-        const [result] = await visionClient.textDetections(request);
+        // ✨ [錯誤修正] 將 textDetections (複數) 改為 textDetection (單數)
+        const [result] = await visionClient.textDetection(request);
         const detections = result.textAnnotations;
         
         if (!detections || detections.length === 0) {
