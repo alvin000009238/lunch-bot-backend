@@ -3,8 +3,9 @@
  * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
  * ✨ 更新重點 ✨
- * - 大幅升級菜單解析函式 `parseMenuFromText`，使其能更好地處理表格和多欄位格式的菜單。
- * - 新的解析邏輯更具彈性，能應對更複雜的圖片辨識結果，解決「解析到 0 個品項」的問題。
+ * - 徹底更換菜單解析引擎，改用更穩定、更準確的「座標定位解析法」。
+ * - 新的 `parseMenuFromAnnotations` 函式利用 Vision API 提供的單字座標，來定位價格並反向推導品項名稱。
+ * - 此方法能有效克服 OCR 文字間距不穩定的問題，大幅提升對表格類菜單的辨識成功率。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -97,12 +98,10 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
         if (!singleDetections || singleDetections.length === 0 || !comboDetections || comboDetections.length === 0) {
             return res.status(404).json({ error: '有圖片無法辨識到任何文字' });
         }
-
-        const singleText = singleDetections[0].description;
-        const comboText = comboDetections[0].description;
-
-        const parsedSingleItems = parseMenuFromText(singleText, false);
-        const parsedComboItems = parseMenuFromText(comboText, true);
+        
+        // ✨ 使用全新的座標解析函式
+        const parsedSingleItems = parseMenuFromAnnotations(singleDetections, false);
+        const parsedComboItems = parseMenuFromAnnotations(comboDetections, true);
 
         const finalMenu = [];
         parsedSingleItems.slice(0, 8).forEach((item, index) => {
@@ -270,37 +269,70 @@ app.get('/admin', (req, res) => {
 
 // --- 主要邏輯函式 ---
 
-// ✨ [升級版] 從 Vision API 回傳的文字中解析菜單
-function parseMenuFromText(text, isComboEligible) {
-    const lines = text.split('\n');
+// ✨ [全新座標解析引擎]
+function parseMenuFromAnnotations(detections, isComboEligible) {
+    // 第一個是全文，我們需要的是後面的個別詞彙
+    const annotations = detections.slice(1);
     const menuItems = [];
-    
-    const ignoreKeywords = ['熱量', '單價', '數量', '小計', '總計', '飲料', '班級', '金額', '收據', '預購單', '訂購單', '說明'];
+    const lines = {}; // 用來根據 Y 座標將詞彙分行
 
-    for (const line of lines) {
-        let cleanedLine = line.trim();
+    // 步驟 1: 將所有詞彙根據 Y 座標分行
+    for (const annotation of annotations) {
+        // 使用詞彙頂部 Y 座標的平均值作為基準
+        const y = (annotation.boundingPoly.vertices[0].y + annotation.boundingPoly.vertices[1].y) / 2;
+        let foundLine = false;
+        // 允許 10 像素的誤差
+        for (const lineY in lines) {
+            if (Math.abs(y - lineY) < 10) {
+                lines[lineY].push(annotation);
+                foundLine = true;
+                break;
+            }
+        }
+        if (!foundLine) {
+            lines[y] = [annotation];
+        }
+    }
+
+    // 步驟 2: 逐行處理
+    for (const lineY in lines) {
+        // 將該行的詞彙由左至右排序
+        const lineAnnotations = lines[lineY].sort((a, b) => a.boundingPoly.vertices[0].x - b.boundingPoly.vertices[0].x);
         
-        if (cleanedLine.length < 3 || ignoreKeywords.some(keyword => cleanedLine.includes(keyword))) {
-            continue;
+        let price = null;
+        let priceIndex = -1;
+
+        // 步驟 3: 在行中找出價格
+        for (let i = lineAnnotations.length - 1; i >= 0; i--) {
+            const text = lineAnnotations[i].description;
+            // 價格是純數字，且符合常規價格範圍
+            if (/^\d{2,3}$/.test(text) && parseInt(text, 10) > 20 && parseInt(text, 10) < 500) {
+                price = parseInt(text, 10);
+                priceIndex = i;
+                break;
+            }
         }
 
-        const priceMatch = cleanedLine.match(/(?:\$|元)?\s*(\d{2,3})/);
-        
-        if (priceMatch) {
-            const price = parseInt(priceMatch[1], 10);
-            const priceIndex = priceMatch.index;
-            let name = cleanedLine.substring(0, priceIndex).trim();
+        // 如果找到了價格
+        if (price !== null) {
+            // 步驟 4: 價格左邊的所有文字都屬於品項名稱
+            let nameParts = [];
+            for (let i = 0; i < priceIndex; i++) {
+                nameParts.push(lineAnnotations[i].description);
+            }
+            let name = nameParts.join(' ');
 
-            name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, '');
-            name = name.replace(/\s*\d+卡$/, '').trim();
-            name = name.replace(/[|:]$/, '').trim();
+            // 步驟 5: 清理品項名稱
+            name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, ''); // 移除開頭的編號
+            name = name.replace(/\s*\d+卡$/, '').trim(); // 移除熱量
+            name = name.replace(/[|:$]/, '').trim(); // 移除雜訊
 
             if (isComboEligible) {
-                name = name.replace(/\s*\+\s*紅茶/, '').trim();
+                name = name.replace(/\s*\+\s*紅茶/, '').trim(); // 移除套餐固定的紅茶
             }
 
-            if (name && name.length > 1 && price > 10 && price < 500) {
-                 menuItems.push({
+            if (name.length > 1) {
+                menuItems.push({
                     name: name,
                     price: price,
                     is_combo_eligible: isComboEligible
