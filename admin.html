@@ -16,12 +16,10 @@
         .message-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .message-error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         
-        /* 登入表單樣式 */
         #login-container { max-width: 400px; }
         #login-form .form-group { margin-bottom: 1.5rem; }
         
-        /* 主內容樣式 */
-        #main-content { display: none; /* 預設隱藏 */ }
+        #main-content { display: none; }
         #user-list { list-style-type: none; padding: 0; }
         #user-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #eee; }
         .user-info { flex-grow: 1; }
@@ -47,6 +45,38 @@
         .status-finished { background-color: #d4edda; color: #155724; }
         .status-preparing { background-color: #fff3cd; color: #856404; }
         .status-cancelled_by_system, .status-cancelled_by_user { background-color: #f8d7da; color: #721c24; text-decoration: line-through; }
+
+        /* ✨ 新增: 智慧上傳樣式 ✨ */
+        #vision-upload-section {
+            background-color: #f8f9fa;
+            border: 2px dashed #007bff;
+            border-radius: 8px;
+            padding: 1.5rem;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        #vision-upload-section h3 {
+            margin-top: 0;
+            color: #0056b3;
+        }
+        #menu-image-upload {
+            display: block;
+            margin: 1rem auto;
+        }
+        #upload-spinner {
+            display: none;
+            border: 4px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 1rem auto 0;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -77,6 +107,16 @@
                     <button onclick="saveDailyMenu()" class="refresh-btn" style="background-color: #28a745;">儲存當日菜單</button>
                 </div>
             </div>
+            
+            <!-- ✨ 新增: 智慧菜單上傳區塊 ✨ -->
+            <div id="vision-upload-section">
+                <h3>智慧菜單上傳</h3>
+                <p>上傳菜單圖片，系統將嘗試自動填入品項及價格。</p>
+                <input type="file" id="menu-image-upload" accept="image/*">
+                <button onclick="uploadAndParseMenu()" id="upload-btn">上傳並解析</button>
+                <div id="upload-spinner"></div>
+            </div>
+            
             <div id="daily-menu-form"></div>
             <div id="daily-menu-message" class="message-box"></div>
         </div>
@@ -144,7 +184,10 @@
         const settingsMessageDiv = document.getElementById('settings-message');
         const deadlineTimeInput = document.getElementById('deadline-time');
 
-        // 登入處理函式
+        // ✨ 新增: Vision Upload DOM 元素
+        const uploadBtn = document.getElementById('upload-btn');
+        const uploadSpinner = document.getElementById('upload-spinner');
+
         async function handleLogin(event) {
             event.preventDefault();
             const username = document.getElementById('username').value;
@@ -158,11 +201,9 @@
                 });
 
                 if (response.ok) {
-                    // 登入成功
-                    sessionStorage.setItem('isLoggedIn', 'true'); // 使用 sessionStorage，關閉分頁後需重新登入
+                    sessionStorage.setItem('isLoggedIn', 'true');
                     showMainContent();
                 } else {
-                    // 登入失敗
                     const result = await response.json();
                     showMessage(loginMessageDiv, result.error || '登入失敗', 'error');
                 }
@@ -171,14 +212,12 @@
             }
         }
 
-        // 顯示主內容
         function showMainContent() {
             loginContainer.style.display = 'none';
             mainContent.style.display = 'block';
-            document.body.style.alignItems = 'flex-start'; // 讓內容從頂部開始
+            document.body.style.alignItems = 'flex-start';
             document.body.style.justifyContent = 'center';
 
-            // 載入後台資料
             const today = new Date().toLocaleDateString('en-CA');
             menuDateSelector.value = today;
             orderDateFilter.value = today;
@@ -189,21 +228,19 @@
             loadSettings();
         }
 
-        // 頁面載入時檢查登入狀態
         window.onload = () => {
             if (sessionStorage.getItem('isLoggedIn') === 'true') {
                 showMainContent();
             }
         };
         
-        // (此處省略了所有 load... 和 save... 的函式，因為它們不需要修改)
-        // (請保留您原始檔案中的所有相關函式)
         function showMessage(element, text, type) {
             element.textContent = text;
             element.className = `message-box message-${type}`;
             element.style.display = 'block';
-            setTimeout(() => { element.style.display = 'none'; }, 3000);
+            setTimeout(() => { element.style.display = 'none'; }, 5000);
         }
+        
         function generateMenuInputForm(menuItems = []) {
             dailyMenuForm.innerHTML = '';
             const priceOptions = `<option value="65">65元</option><option value="70">70元</option><option value="75">75元</option><option value="custom">手動</option>`;
@@ -215,19 +252,27 @@
                 dailyMenuForm.insertAdjacentHTML('beforeend', itemHtml);
                 const priceSelect = document.getElementById(`price-select-${i}`);
                 const priceInput = document.getElementById(`price-input-${i}`);
-                if (item.price && ![65, 70, 75].includes(parseFloat(item.price))) {
-                    priceSelect.value = 'custom';
-                    priceInput.style.display = 'block';
-                } else if (item.price) {
-                    priceSelect.value = item.price;
+                
+                if (item.price) {
+                    const priceValue = parseFloat(item.price);
+                    if ([65, 70, 75].includes(priceValue)) {
+                        priceSelect.value = priceValue;
+                        priceInput.style.display = 'none';
+                    } else {
+                        priceSelect.value = 'custom';
+                        priceInput.value = priceValue;
+                        priceInput.style.display = 'block';
+                    }
                 }
             }
         }
+
         function togglePriceInput(index) {
             const priceSelect = document.getElementById(`price-select-${index}`);
             const priceInput = document.getElementById(`price-input-${index}`);
             priceInput.style.display = priceSelect.value === 'custom' ? 'block' : 'none';
         }
+
         async function loadDailyMenu() {
             const selectedDate = menuDateSelector.value;
             if (!selectedDate) return;
@@ -241,6 +286,54 @@
                 generateMenuInputForm();
             }
         }
+
+        // ✨ 新增: 上傳並解析菜單圖片的函式
+        async function uploadAndParseMenu() {
+            const fileInput = document.getElementById('menu-image-upload');
+            if (fileInput.files.length === 0) {
+                showMessage(dailyMenuMessageDiv, '請先選擇一個圖片檔案', 'error');
+                return;
+            }
+
+            uploadBtn.disabled = true;
+            uploadSpinner.style.display = 'block';
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = async () => {
+                const base64Image = reader.result.split(',')[1];
+                try {
+                    const response = await fetch(`${backendUrl}/admin/parse-menu-from-image`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: base64Image })
+                    });
+                    
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.error || '解析失敗');
+                    }
+                    
+                    showMessage(dailyMenuMessageDiv, `成功解析到 ${result.length} 個品項！`, 'success');
+                    generateMenuInputForm(result);
+
+                } catch (error) {
+                    showMessage(dailyMenuMessageDiv, `解析失敗: ${error.message}`, 'error');
+                } finally {
+                    uploadBtn.disabled = false;
+                    uploadSpinner.style.display = 'none';
+                    fileInput.value = ''; // 清空選擇的檔案
+                }
+            };
+            reader.onerror = () => {
+                showMessage(dailyMenuMessageDiv, '讀取檔案失敗', 'error');
+                uploadBtn.disabled = false;
+                uploadSpinner.style.display = 'none';
+            };
+        }
+
         async function saveDailyMenu() {
             const selectedDate = menuDateSelector.value;
             const menuItems = [];
@@ -269,6 +362,9 @@
                 showMessage(dailyMenuMessageDiv, `儲存失敗: ${error.message}`, 'error');
             }
         }
+        
+        // (此處省略了使用者管理、訂單列表、系統設定等相關函式，它們無需修改)
+        // (請保留您原始檔案中的所有相關函式)
         async function loadUsers() {
             try {
                 const response = await fetch(`${backendUrl}/admin/users`);
@@ -366,6 +462,7 @@
                 showMessage(settingsMessageDiv, `儲存設定失敗: ${error.message}`, 'error');
             }
         }
+
         dailyMenuForm.addEventListener('keydown', function(event) {
             if (event.key === 'Enter') {
                 const activeElement = document.activeElement;
