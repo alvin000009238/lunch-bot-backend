@@ -3,7 +3,8 @@
  * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
  * ✨ 更新重點 ✨
- * - 修正了呼叫 Vision API 的函式名稱，將 `textDetections` 改為 `textDetection`，以解決 TypeError。
+ * - 根據 Vision API 錯誤日誌，將 `visionClient.textDetection` 更換為 `visionClient.annotateImage`。
+ * - `annotateImage` 是處理帶有 `features` 參數請求的正確方法，可解決 "Setting explicit features is not supported" 的錯誤。
  * - 本檔案為包含所有功能的完整、乾淨版本。
  */
 // --- 1. 引入需要的套件 ---
@@ -92,8 +93,8 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
             features: [{ type: 'TEXT_DETECTION' }],
         };
 
-        // ✨ [錯誤修正] 將 textDetections (複數) 改為 textDetection (單數)
-        const [result] = await visionClient.textDetection(request);
+        // ✨ [錯誤修正] 根據錯誤日誌建議，將函式更換為 annotateImage
+        const [result] = await visionClient.annotateImage(request);
         const detections = result.textAnnotations;
         
         if (!detections || detections.length === 0) {
