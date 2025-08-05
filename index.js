@@ -3,9 +3,8 @@
  * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
  * ✨ 更新重點 ✨
- * - 升級 `/admin/parse-menu-from-image` 端點，使其能接收 singleItemsImage 和 comboItemsImage 兩張圖片。
- * - 實作智慧分類與排序邏輯，將單點品項對應到 1-8，套餐品項對應到 9-11。
- * - 優化 `parseMenuFromText` 函式，使其更能應對您提供的特定菜單格式。
+ * - 大幅升級菜單解析函式 `parseMenuFromText`，使其能更好地處理表格和多欄位格式的菜單。
+ * - 新的解析邏輯更具彈性，能應對更複雜的圖片辨識結果，解決「解析到 0 個品項」的問題。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -80,7 +79,6 @@ app.post('/admin/login', (req, res) => {
     }
 });
 
-// ✨ 修改: Vision API 菜單解析端點 (雙圖)
 app.post('/admin/parse-menu-from-image', async (req, res) => {
     try {
         const { singleItemsImage, comboItemsImage } = req.body;
@@ -88,7 +86,6 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
             return res.status(400).json({ error: '必須同時提供單點和套餐的圖片' });
         }
 
-        // 平行處理兩張圖片的辨識
         const [singleResult, comboResult] = await Promise.all([
             visionClient.annotateImage({ image: { content: singleItemsImage }, features: [{ type: 'TEXT_DETECTION' }] }),
             visionClient.annotateImage({ image: { content: comboItemsImage }, features: [{ type: 'TEXT_DETECTION' }] })
@@ -104,11 +101,9 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
         const singleText = singleDetections[0].description;
         const comboText = comboDetections[0].description;
 
-        // 分別解析並傳入 isComboEligible 標記
         const parsedSingleItems = parseMenuFromText(singleText, false);
         const parsedComboItems = parseMenuFromText(comboText, true);
 
-        // 組合並排序菜單
         const finalMenu = [];
         parsedSingleItems.slice(0, 8).forEach((item, index) => {
             finalMenu.push({ ...item, display_order: index + 1 });
@@ -280,29 +275,28 @@ function parseMenuFromText(text, isComboEligible) {
     const lines = text.split('\n');
     const menuItems = [];
     
-    const ignoreKeywords = ['熱量', '單價', '數量', '小計', '總計', '套餐', '飲料', '班級', '金額', '收據', '預購單'];
-
-    const pattern = /([\u4e00-\u9fa5a-zA-Z\s\+]+).*?(\$|元)?\s*(\d{2,3})/;
+    const ignoreKeywords = ['熱量', '單價', '數量', '小計', '總計', '飲料', '班級', '金額', '收據', '預購單', '訂購單', '說明'];
 
     for (const line of lines) {
         let cleanedLine = line.trim();
         
-        cleanedLine = cleanedLine.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, '');
-
-        if (ignoreKeywords.some(keyword => cleanedLine.includes(keyword)) || cleanedLine.length < 3) {
+        if (cleanedLine.length < 3 || ignoreKeywords.some(keyword => cleanedLine.includes(keyword))) {
             continue;
         }
 
-        const match = cleanedLine.match(pattern);
+        const priceMatch = cleanedLine.match(/(?:\$|元)?\s*(\d{2,3})/);
         
-        if (match) {
-            let name = match[1].trim();
-            const price = parseInt(match[3], 10);
+        if (priceMatch) {
+            const price = parseInt(priceMatch[1], 10);
+            const priceIndex = priceMatch.index;
+            let name = cleanedLine.substring(0, priceIndex).trim();
 
+            name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, '');
+            name = name.replace(/\s*\d+卡$/, '').trim();
             name = name.replace(/[|:]$/, '').trim();
-            // 對於套餐，移除固定的 "+紅茶" 字樣，因為後續流程會處理
+
             if (isComboEligible) {
-                name = name.replace(/\s*\+\s*紅茶/, '');
+                name = name.replace(/\s*\+\s*紅茶/, '').trim();
             }
 
             if (name && name.length > 1 && price > 10 && price < 500) {
@@ -320,7 +314,7 @@ function parseMenuFromText(text, isComboEligible) {
 
 async function getSetting(key, defaultValue) {
     try {
-        const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
+        const result = await pool.query('SELECT * FROM app_settings WHERE key = $1', [key]);
         if (result.rows.length > 0) {
             return result.rows[0].value;
         }
