@@ -46,7 +46,6 @@
         .status-preparing { background-color: #fff3cd; color: #856404; }
         .status-cancelled_by_system, .status-cancelled_by_user { background-color: #f8d7da; color: #721c24; text-decoration: line-through; }
 
-        /* ✨ 新增: 智慧上傳樣式 ✨ */
         #vision-upload-section {
             background-color: #f8f9fa;
             border: 2px dashed #007bff;
@@ -59,9 +58,24 @@
             margin-top: 0;
             color: #0056b3;
         }
-        #menu-image-upload {
-            display: block;
-            margin: 1rem auto;
+        /* ✨ 新增: 雙圖上傳樣式 ✨ */
+        .upload-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin: 1rem 0;
+        }
+        .upload-box {
+            border: 1px solid #ddd;
+            padding: 1rem;
+            border-radius: 5px;
+        }
+        .upload-box label {
+            font-size: 1.1rem;
+            color: #333;
+        }
+        .upload-box input[type="file"] {
+            margin-top: 0.5rem;
         }
         #upload-spinner {
             display: none;
@@ -108,11 +122,20 @@
                 </div>
             </div>
             
-            <!-- ✨ 新增: 智慧菜單上傳區塊 ✨ -->
+            <!-- ✨ 修改: 智慧菜單上傳區塊 (雙圖) ✨ -->
             <div id="vision-upload-section">
-                <h3>智慧菜單上傳</h3>
-                <p>上傳菜單圖片，系統將嘗試自動填入品項及價格。</p>
-                <input type="file" id="menu-image-upload" accept="image/*">
+                <h3>智慧菜單上傳 (雙圖模式)</h3>
+                <p>請分別上傳「單點」和「套餐」的菜單圖片。</p>
+                <div class="upload-grid">
+                    <div class="upload-box">
+                        <label for="single-items-image">單點菜單 (8項)</label>
+                        <input type="file" id="single-items-image" accept="image/*">
+                    </div>
+                    <div class="upload-box">
+                        <label for="combo-items-image">套餐菜單 (3項)</label>
+                        <input type="file" id="combo-items-image" accept="image/*">
+                    </div>
+                </div>
                 <button onclick="uploadAndParseMenu()" id="upload-btn">上傳並解析</button>
                 <div id="upload-spinner"></div>
             </div>
@@ -184,7 +207,6 @@
         const settingsMessageDiv = document.getElementById('settings-message');
         const deadlineTimeInput = document.getElementById('deadline-time');
 
-        // ✨ 新增: Vision Upload DOM 元素
         const uploadBtn = document.getElementById('upload-btn');
         const uploadSpinner = document.getElementById('upload-spinner');
 
@@ -287,51 +309,59 @@
             }
         }
 
-        // ✨ 新增: 上傳並解析菜單圖片的函式
+        // ✨ 修改: 上傳並解析菜單圖片的函式 (雙圖)
         async function uploadAndParseMenu() {
-            const fileInput = document.getElementById('menu-image-upload');
-            if (fileInput.files.length === 0) {
-                showMessage(dailyMenuMessageDiv, '請先選擇一個圖片檔案', 'error');
+            const singleItemsInput = document.getElementById('single-items-image');
+            const comboItemsInput = document.getElementById('combo-items-image');
+
+            if (singleItemsInput.files.length === 0 || comboItemsInput.files.length === 0) {
+                showMessage(dailyMenuMessageDiv, '請務必同時上傳「單點」和「套餐」兩張菜單圖片', 'error');
                 return;
             }
 
             uploadBtn.disabled = true;
             uploadSpinner.style.display = 'block';
 
-            const file = fileInput.files[0];
-            const reader = new FileReader();
-            reader.readAsDataURL(file);
-            reader.onload = async () => {
-                const base64Image = reader.result.split(',')[1];
-                try {
-                    const response = await fetch(`${backendUrl}/admin/parse-menu-from-image`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image: base64Image })
-                    });
-                    
-                    const result = await response.json();
+            try {
+                const singleItemsImage = await readFileAsBase64(singleItemsInput.files[0]);
+                const comboItemsImage = await readFileAsBase64(comboItemsInput.files[0]);
 
-                    if (!response.ok) {
-                        throw new Error(result.error || '解析失敗');
-                    }
-                    
-                    showMessage(dailyMenuMessageDiv, `成功解析到 ${result.length} 個品項！`, 'success');
-                    generateMenuInputForm(result);
+                const response = await fetch(`${backendUrl}/admin/parse-menu-from-image`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        singleItemsImage: singleItemsImage.split(',')[1],
+                        comboItemsImage: comboItemsImage.split(',')[1]
+                    })
+                });
+                
+                const result = await response.json();
 
-                } catch (error) {
-                    showMessage(dailyMenuMessageDiv, `解析失敗: ${error.message}`, 'error');
-                } finally {
-                    uploadBtn.disabled = false;
-                    uploadSpinner.style.display = 'none';
-                    fileInput.value = ''; // 清空選擇的檔案
+                if (!response.ok) {
+                    throw new Error(result.error || '解析失敗');
                 }
-            };
-            reader.onerror = () => {
-                showMessage(dailyMenuMessageDiv, '讀取檔案失敗', 'error');
+                
+                showMessage(dailyMenuMessageDiv, `成功解析到 ${result.length} 個品項！`, 'success');
+                generateMenuInputForm(result);
+
+            } catch (error) {
+                showMessage(dailyMenuMessageDiv, `解析失敗: ${error.message}`, 'error');
+            } finally {
                 uploadBtn.disabled = false;
                 uploadSpinner.style.display = 'none';
-            };
+                singleItemsInput.value = '';
+                comboItemsInput.value = '';
+            }
+        }
+        
+        // 輔助函式：將檔案讀取為 Base64
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = (error) => reject(error);
+            });
         }
 
         async function saveDailyMenu() {
@@ -363,8 +393,6 @@
             }
         }
         
-        // (此處省略了使用者管理、訂單列表、系統設定等相關函式，它們無需修改)
-        // (請保留您原始檔案中的所有相關函式)
         async function loadUsers() {
             try {
                 const response = await fetch(`${backendUrl}/admin/users`);

@@ -3,8 +3,9 @@
  * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
  * ✨ 更新重點 ✨
- * - 調整了 Express 路由的順序，將所有 API 端點 (例如 /admin/users) 移到 `app.get('/admin', ...)` 之前。
- * - 這個修改解決了後台管理頁面 API 全部回傳 404 (Not Found) 的問題。
+ * - 升級 `/admin/parse-menu-from-image` 端點，使其能接收 singleItemsImage 和 comboItemsImage 兩張圖片。
+ * - 實作智慧分類與排序邏輯，將單點品項對應到 1-8，套餐品項對應到 9-11。
+ * - 優化 `parseMenuFromText` 函式，使其更能應對您提供的特定菜單格式。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -79,29 +80,51 @@ app.post('/admin/login', (req, res) => {
     }
 });
 
+// ✨ 修改: Vision API 菜單解析端點 (雙圖)
 app.post('/admin/parse-menu-from-image', async (req, res) => {
     try {
-        const { image } = req.body;
-        if (!image) {
-            return res.status(400).json({ error: '沒有提供圖片' });
+        const { singleItemsImage, comboItemsImage } = req.body;
+        if (!singleItemsImage || !comboItemsImage) {
+            return res.status(400).json({ error: '必須同時提供單點和套餐的圖片' });
         }
-        const request = {
-            image: { content: image },
-            features: [{ type: 'TEXT_DETECTION' }],
-        };
-        const [result] = await visionClient.annotateImage(request);
-        const detections = result.textAnnotations;
-        if (!detections || detections.length === 0) {
-            return res.status(404).json({ error: '在圖片中找不到任何文字' });
+
+        // 平行處理兩張圖片的辨識
+        const [singleResult, comboResult] = await Promise.all([
+            visionClient.annotateImage({ image: { content: singleItemsImage }, features: [{ type: 'TEXT_DETECTION' }] }),
+            visionClient.annotateImage({ image: { content: comboItemsImage }, features: [{ type: 'TEXT_DETECTION' }] })
+        ]);
+
+        const singleDetections = singleResult[0].textAnnotations;
+        const comboDetections = comboResult[0].textAnnotations;
+
+        if (!singleDetections || singleDetections.length === 0 || !comboDetections || comboDetections.length === 0) {
+            return res.status(404).json({ error: '有圖片無法辨識到任何文字' });
         }
-        const fullText = detections[0].description;
-        const parsedMenu = parseMenuFromText(fullText);
-        res.json(parsedMenu);
+
+        const singleText = singleDetections[0].description;
+        const comboText = comboDetections[0].description;
+
+        // 分別解析並傳入 isComboEligible 標記
+        const parsedSingleItems = parseMenuFromText(singleText, false);
+        const parsedComboItems = parseMenuFromText(comboText, true);
+
+        // 組合並排序菜單
+        const finalMenu = [];
+        parsedSingleItems.slice(0, 8).forEach((item, index) => {
+            finalMenu.push({ ...item, display_order: index + 1 });
+        });
+        parsedComboItems.slice(0, 3).forEach((item, index) => {
+            finalMenu.push({ ...item, display_order: index + 9 });
+        });
+
+        res.json(finalMenu);
+
     } catch (error) {
         console.error('Vision API 處理失敗:', error);
         res.status(500).json({ error: '解析圖片時發生伺服器錯誤' });
     }
 });
+
 
 app.get('/admin/settings', async (req, res) => {
     try {
@@ -251,30 +274,49 @@ app.get('/admin', (req, res) => {
 });
 
 // --- 主要邏輯函式 ---
-function parseMenuFromText(text) {
+
+// ✨ [升級版] 從 Vision API 回傳的文字中解析菜單
+function parseMenuFromText(text, isComboEligible) {
     const lines = text.split('\n');
     const menuItems = [];
-    let displayOrder = 1;
-    const pattern = /(.+?)\s+(\$?)(\d{1,3})$/;
+    
+    const ignoreKeywords = ['熱量', '單價', '數量', '小計', '總計', '套餐', '飲料', '班級', '金額', '收據', '預購單'];
+
+    const pattern = /([\u4e00-\u9fa5a-zA-Z\s\+]+).*?(\$|元)?\s*(\d{2,3})/;
+
     for (const line of lines) {
-        const cleanedLine = line.trim();
+        let cleanedLine = line.trim();
+        
+        cleanedLine = cleanedLine.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, '');
+
+        if (ignoreKeywords.some(keyword => cleanedLine.includes(keyword)) || cleanedLine.length < 3) {
+            continue;
+        }
+
         const match = cleanedLine.match(pattern);
+        
         if (match) {
             let name = match[1].trim();
             const price = parseInt(match[3], 10);
-            name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\.]+\s*/, '').trim();
+
             name = name.replace(/[|:]$/, '').trim();
-            if (name && price > 0 && price < 500) {
+            // 對於套餐，移除固定的 "+紅茶" 字樣，因為後續流程會處理
+            if (isComboEligible) {
+                name = name.replace(/\s*\+\s*紅茶/, '');
+            }
+
+            if (name && name.length > 1 && price > 10 && price < 500) {
                  menuItems.push({
                     name: name,
                     price: price,
-                    display_order: displayOrder++
+                    is_combo_eligible: isComboEligible
                 });
             }
         }
     }
     return menuItems;
 }
+
 
 async function getSetting(key, defaultValue) {
     try {
