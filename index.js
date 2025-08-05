@@ -3,9 +3,8 @@
  * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
  * ✨ 更新重點 ✨
- * - 根據 Vision API 錯誤日誌，將 `visionClient.textDetection` 更換為 `visionClient.annotateImage`。
- * - `annotateImage` 是處理帶有 `features` 參數請求的正確方法，可解決 "Setting explicit features is not supported" 的錯誤。
- * - 本檔案為包含所有功能的完整、乾淨版本。
+ * - 調整了 Express 路由的順序，將所有 API 端點 (例如 /admin/users) 移到 `app.get('/admin', ...)` 之前。
+ * - 這個修改解決了後台管理頁面 API 全部回傳 404 (Not Found) 的問題。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -60,11 +59,11 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
-// --- 後台管理頁面路由 ---
-app.get('/admin', (req, res) => {
-    res.sendFile(path.join(__dirname, 'admin.html'));
-});
+// ==========================================================
+// == ✨ [路由順序修正] 將所有 API 路由放在前面 ✨
+// ==========================================================
 
+// --- 後台管理 API ---
 app.post('/admin/login', (req, res) => {
     const { username, password } = req.body;
     const adminUsername = process.env.ADMIN_USERNAME;
@@ -80,56 +79,191 @@ app.post('/admin/login', (req, res) => {
     }
 });
 
-// --- Vision API 菜單解析端點 ---
 app.post('/admin/parse-menu-from-image', async (req, res) => {
     try {
         const { image } = req.body;
         if (!image) {
             return res.status(400).json({ error: '沒有提供圖片' });
         }
-
         const request = {
             image: { content: image },
             features: [{ type: 'TEXT_DETECTION' }],
         };
-
-        // ✨ [錯誤修正] 根據錯誤日誌建議，將函式更換為 annotateImage
         const [result] = await visionClient.annotateImage(request);
         const detections = result.textAnnotations;
-        
         if (!detections || detections.length === 0) {
             return res.status(404).json({ error: '在圖片中找不到任何文字' });
         }
-
         const fullText = detections[0].description;
         const parsedMenu = parseMenuFromText(fullText);
-
         res.json(parsedMenu);
-
     } catch (error) {
         console.error('Vision API 處理失敗:', error);
         res.status(500).json({ error: '解析圖片時發生伺服器錯誤' });
     }
 });
 
+app.get('/admin/settings', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM app_settings WHERE key = $1', ['deadline_time']);
+        const deadline = result.rows.length > 0 ? result.rows[0].value : '09:00';
+        res.json({ deadline_time: deadline });
+    } catch (error) {
+        if (error.code === '42P01') { 
+            try {
+                await pool.query('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)');
+                await pool.query("INSERT INTO app_settings (key, value) VALUES ('deadline_time', '09:00') ON CONFLICT (key) DO NOTHING");
+                console.log('成功建立 app_settings 資料表並設定預設值。');
+                return res.json({ deadline_time: '09:00' });
+            } catch (creationError) {
+                 console.error('建立 app_settings 表時發生錯誤', creationError);
+                 return res.status(500).json({ error: '伺服器內部錯誤' });
+            }
+        }
+        console.error('取得設定時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+app.post('/admin/settings', async (req, res) => {
+    const { deadline_time } = req.body;
+    if (!deadline_time || !/^\d{2}:\d{2}$/.test(deadline_time)) {
+        return res.status(400).json({ error: '請提供有效的截止時間 (HH:MM 格式)' });
+    }
+    try {
+        const query = `
+            INSERT INTO app_settings (key, value) 
+            VALUES ('deadline_time', $1) 
+            ON CONFLICT (key) 
+            DO UPDATE SET value = $1;
+        `;
+        await pool.query(query, [deadline_time]);
+        res.json({ message: '設定儲存成功' });
+    } catch (error) {
+        console.error('儲存設定時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+
+app.get('/admin/daily-menu', async (req, res) => {
+    try {
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ error: '請提供日期' });
+        const result = await pool.query('SELECT * FROM menu_items WHERE menu_date = $1 ORDER BY display_order', [date]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('取得每日菜單時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+app.post('/admin/daily-menu', async (req, res) => {
+    const { date, items } = req.body;
+    if (!date || !items) return res.status(400).json({ error: '請提供日期和菜單項目' });
+    const dbClient = await pool.connect();
+    try {
+        await dbClient.query('BEGIN');
+        await dbClient.query('DELETE FROM menu_items WHERE menu_date = $1', [date]);
+        for (const item of items) {
+            const query = `INSERT INTO menu_items (menu_date, name, price, is_combo_eligible, display_order) VALUES ($1, $2, $3, $4, $5)`;
+            await dbClient.query(query, [date, item.name, item.price, item.is_combo_eligible, item.display_order]);
+        }
+        await dbClient.query('COMMIT');
+        res.status(201).json({ message: '每日菜單儲存成功' });
+    } catch (error) {
+        await dbClient.query('ROLLBACK');
+        console.error('儲存每日菜單時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    } finally {
+        dbClient.release();
+    }
+});
+
+app.get('/admin/users', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, display_name, balance FROM users ORDER BY id');
+        res.json(result.rows);
+    } catch (error) {
+        console.error('取得使用者列表時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+app.post('/admin/users/:id/deposit', async (req, res) => {
+    const dbClient = await pool.connect();
+    try {
+        await dbClient.query('BEGIN');
+        const userId = parseInt(req.params.id, 10);
+        const { amount } = req.body;
+        if (!amount || amount <= 0) return res.status(400).json({ error: '請提供有效的儲值金額' });
+        const updateResult = await dbClient.query(
+            'UPDATE users SET balance = balance + $1 WHERE id = $2 RETURNING *',
+            [amount, userId]
+        );
+        if (updateResult.rows.length === 0) throw new Error('找不到該使用者');
+        const updatedUser = updateResult.rows[0];
+        await dbClient.query(
+            'INSERT INTO transactions (user_id, type, amount) VALUES ($1, $2, $3)',
+            [userId, 'deposit', amount]
+        );
+        await dbClient.query('COMMIT');
+        res.json({ message: '儲值成功', user: updatedUser });
+    } catch (error) {
+        await dbClient.query('ROLLBACK');
+        console.error('儲值時發生錯誤', error);
+        res.status(500).json({ error: error.message || '伺服器內部錯誤' });
+    } finally {
+        dbClient.release();
+    }
+});
+
+app.get('/admin/orders', async (req, res) => {
+    try {
+        const filterDate = req.query.date || new Date().toLocaleDateString('en-CA');
+        const query = `
+            SELECT 
+                o.id, o.total_amount, o.status, o.created_at, o.order_for_date,
+                u.display_name,
+                STRING_AGG(oi.item_name || 
+                    CASE 
+                        WHEN oi.is_combo THEN '(套餐: ' || oi.selected_drink || ')' 
+                        ELSE '' 
+                    END, ', ') as items
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN order_items oi ON o.id = oi.order_id
+            WHERE o.order_for_date = $1
+            GROUP BY o.id, u.display_name
+            ORDER BY o.created_at DESC;
+        `;
+        const result = await pool.query(query, [filterDate]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('取得訂單列表時發生錯誤', error);
+        res.status(500).json({ error: '伺服器內部錯誤' });
+    }
+});
+
+// --- 後台管理頁面路由 (這個必須放在所有 /admin/... API 之後) ---
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+// --- 主要邏輯函式 ---
 function parseMenuFromText(text) {
     const lines = text.split('\n');
     const menuItems = [];
     let displayOrder = 1;
-
     const pattern = /(.+?)\s+(\$?)(\d{1,3})$/;
-
     for (const line of lines) {
         const cleanedLine = line.trim();
         const match = cleanedLine.match(pattern);
-        
         if (match) {
             let name = match[1].trim();
             const price = parseInt(match[3], 10);
-
             name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\.]+\s*/, '').trim();
             name = name.replace(/[|:]$/, '').trim();
-
             if (name && price > 0 && price < 500) {
                  menuItems.push({
                     name: name,
@@ -142,7 +276,6 @@ function parseMenuFromText(text) {
     return menuItems;
 }
 
-// --- 主要邏輯函式 ---
 async function getSetting(key, defaultValue) {
     try {
         const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
