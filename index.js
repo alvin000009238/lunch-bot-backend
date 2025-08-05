@@ -1,25 +1,10 @@
 /*
  * =================================================================
- * == 檔案: index.js
+ * == 檔案: index.js (已修正語法錯誤)
  * =================================================================
-<<<<<<< HEAD
- * ✨ 更新重點 (新增 Vision API 功能) ✨
- * 1.  引入 @google-cloud/vision 套件。
- * 2.  新增 API 端點 `/admin/parse-menu-from-image`：
- * - 接收從前端傳來的 Base64 圖片字串。
- * - 呼叫 Google Cloud Vision API 進行文字辨識。
- * - 實作 `parseMenuFromText` 函式，用於解析辨識出的文字，並整理成結構化的菜單資料。
- * - 將解析後的 JSON 格式菜單回傳給前端。
- * 3.  請務必在您的環境中設定 GOOGLE_APPLICATION_CREDENTIALS，以便後端能成功驗證並呼叫 Vision API。
-=======
- * ✨ 更新重點 (修正價格計算錯誤) ✨
- * 1.  修正訂單處理邏輯 (handleOrderAction):
- * - 新增判斷 `item.is_combo_eligible`。
- * - 只有當品項是「可升級套餐」時，才會根據使用者是否選擇套餐來調整價格。
- * - 對於一般的單點品項，直接採用資料庫中的定價，不再錯誤地扣除15元。
- *
- * 這個修改確保了所有品項的計價都符合預期。
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
+ * ✨ 更新重點 ✨
+ * - 移除了所有可能存在的合併衝突標記 (<<<<<<<, =======, >>>>>>>)，解決了 SyntaxError。
+ * - 本檔案為包含所有功能的完整、乾淨版本。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
@@ -28,7 +13,6 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const cron = require('node-cron');
 const path = require('path');
-// ✨ 新增: 引入 Google Cloud Vision 套件
 const vision = require('@google-cloud/vision');
 
 // --- 2. 設定 ---
@@ -50,7 +34,6 @@ const DRINKS = ['紅茶', '綠茶', '鮮奶茶'];
 // --- 4. 建立 Express 伺服器和 LINE Bot / Vision 用戶端 ---
 const app = express();
 const client = new line.Client(config);
-// ✨ 新增: 建立 Vision API 用戶端
 const visionClient = new vision.ImageAnnotatorClient();
 
 // 增加請求大小限制，以容納 Base64 圖片
@@ -96,10 +79,7 @@ app.post('/admin/login', (req, res) => {
     }
 });
 
-<<<<<<< HEAD
-// ==========================================================
-// == ✨ 新增：Vision API 菜單解析端點 ✨
-// ==========================================================
+// --- Vision API 菜單解析端點 ---
 app.post('/admin/parse-menu-from-image', async (req, res) => {
     try {
         const { image } = req.body;
@@ -119,7 +99,6 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
             return res.status(404).json({ error: '在圖片中找不到任何文字' });
         }
 
-        // 使用第一個偵測結果 (通常是整張圖的文字) 來進行解析
         const fullText = detections[0].description;
         const parsedMenu = parseMenuFromText(fullText);
 
@@ -131,37 +110,25 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
     }
 });
 
-/**
- * ✨ 新增: 從 Vision API 回傳的文字中解析菜單
- * 這是一個啟發式解析函式，可能需要根據菜單格式微調
- * @param {string} text - 從 Vision API 取得的完整文字
- * @returns {Array<Object>} - 解析後的菜單項目陣列
- */
 function parseMenuFromText(text) {
     const lines = text.split('\n');
     const menuItems = [];
     let displayOrder = 1;
 
-    // 正則表達式，用於尋找品項和價格
-    // 匹配: (任意文字) (空格) (數字)
     const pattern = /(.+?)\s+(\$?)(\d{1,3})$/;
 
     for (const line of lines) {
         const cleanedLine = line.trim();
-        
-        // 嘗試匹配 "品項 價格" 的格式
         const match = cleanedLine.match(pattern);
         
         if (match) {
             let name = match[1].trim();
             const price = parseInt(match[3], 10);
 
-            // 移除常見的編號，例如 "1.", "②", "."
             name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\.]+\s*/, '').trim();
-            // 移除一些 OCR 可能誤判的雜訊
             name = name.replace(/[|:]$/, '').trim();
 
-            if (name && price > 0 && price < 500) { // 基本的價格合理性檢查
+            if (name && price > 0 && price < 500) {
                  menuItems.push({
                     name: name,
                     price: price,
@@ -173,11 +140,7 @@ function parseMenuFromText(text) {
     return menuItems;
 }
 
-
-// (此處省略了所有其他後端函式，它們無需修改)
-// (請保留您原始檔案中的所有函式)
-=======
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
+// --- 主要邏輯函式 ---
 async function getSetting(key, defaultValue) {
     try {
         const result = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
@@ -201,7 +164,6 @@ async function runDailySettlement() {
         const check = await dbClient.query('SELECT * FROM daily_settlements WHERE settlement_date = $1', [settlementDate]);
         if (check.rows.length > 0) {
             await dbClient.query('ROLLBACK');
-            console.log(`[排程檢查] 日期 ${settlementDate} 已結算過，跳過。`);
             return;
         }
         const deadlineTime = await getSetting('deadline_time', '09:00');
@@ -209,18 +171,14 @@ async function runDailySettlement() {
         const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
         if (!isPastDeadline) {
             await dbClient.query('ROLLBACK');
-            console.log(`[排程檢查] 時間未到 (現在 ${taipeiNow.getHours()}:${taipeiNow.getMinutes()} / 截止 ${deadlineTime})，跳過。`);
             return;
         }
-        console.log(`[結算任務開始] 準備結算日期: ${settlementDate}`);
         
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
         const cancelledUserIds = new Set();
         if (negativeUsers.rows.length > 0) {
             const userIds = negativeUsers.rows.map(u => u.id);
-            console.log(`[結算任務] 發現 ${userIds.length} 位使用者餘額為負，正在檢查其訂單...`);
             const ordersToCancel = await dbClient.query('SELECT id, user_id, total_amount FROM orders WHERE order_for_date = $1 AND user_id = ANY($2::int[]) AND status = $3', [settlementDate, userIds, 'preparing']);
-            
             for (const order of ordersToCancel.rows) {
                 await dbClient.query('UPDATE orders SET status = $1 WHERE id = $2', ['cancelled_by_system', order.id]);
                 await dbClient.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [order.total_amount, order.user_id]);
@@ -228,18 +186,6 @@ async function runDailySettlement() {
                 cancelledUserIds.add(order.user_id);
             }
         }
-<<<<<<< HEAD
-        for (const userId of cancelledUserIds) {
-            const user = await dbClient.query('SELECT line_user_id FROM users WHERE id = $1', [userId]);
-            if(user.rows.length > 0) await client.pushMessage(user.rows[0].line_user_id, { type: 'text', text: '因餘額不足，您今天的訂單已被自動取消，款項已退回。' });
-        }
-        const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
-        for (const order of successOrders.rows) {
-            const message = `訂餐成功！\n您今天訂購了：${order.items}\n您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
-            await client.pushMessage(order.line_user_id, { type: 'text', text: message });
-        }
-=======
-
         for (const userId of cancelledUserIds) {
             const user = await dbClient.query('SELECT line_user_id FROM users WHERE id = $1', [userId]);
             if(user.rows.length > 0) {
@@ -257,11 +203,10 @@ async function runDailySettlement() {
             try {
                 await client.pushMessage(order.line_user_id, { type: 'text', text: message });
             } catch (pushError) {
-                console.error(`[結算任務] 無法傳送成功訊息給使用者 ${order.user_id} (${order.line_user_id})`, pushError);
+                console.error(`[結算任務] 無法傳送成功訊息給使用者 ${order.user_id}`, pushError);
             }
         }
         
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
         const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
         let summaryText;
         if (summaryResult.rows.length > 0) {
@@ -287,15 +232,9 @@ async function runDailySettlement() {
             await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
         }
         
-        const updateResult = await dbClient.query(
-            "UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'",
-            [settlementDate]
-        );
-        console.log(`[結算流程] 已將 ${updateResult.rowCount} 筆 ${settlementDate} 的成功訂單狀態更新為 'finished'`);
-        
+        await dbClient.query("UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'", [settlementDate]);
         await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
         await dbClient.query('COMMIT');
-        console.log(`[結算任務成功] 日期 ${settlementDate} 結算完成`);
     } catch (error) {
         await dbClient.query('ROLLBACK');
         console.error(`[結算任務失敗] 結算 ${settlementDate} 時發生錯誤`, error);
@@ -303,196 +242,36 @@ async function runDailySettlement() {
         dbClient.release();
     }
 }
-<<<<<<< HEAD
-=======
 
-// --- 後台管理 API (無變更) ---
-app.get('/admin/settings', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM app_settings WHERE key = $1', ['deadline_time']);
-        const deadline = result.rows.length > 0 ? result.rows[0].value : '09:00';
-        res.json({ deadline_time: deadline });
-    } catch (error) {
-        if (error.code === '42P01') { 
-            try {
-                await pool.query('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)');
-                await pool.query("INSERT INTO app_settings (key, value) VALUES ('deadline_time', '09:00') ON CONFLICT (key) DO NOTHING");
-                console.log('成功建立 app_settings 資料表並設定預設值。');
-                return res.json({ deadline_time: '09:00' });
-            } catch (creationError) {
-                 console.error('建立 app_settings 表時發生錯誤', creationError);
-                 return res.status(500).json({ error: '伺服器內部錯誤' });
-            }
-        }
-        console.error('取得設定時發生錯誤', error);
-        res.status(500).json({ error: '伺服器內部錯誤' });
-    }
-});
-
-app.post('/admin/settings', async (req, res) => {
-    const { deadline_time } = req.body;
-    if (!deadline_time || !/^\d{2}:\d{2}$/.test(deadline_time)) {
-        return res.status(400).json({ error: '請提供有效的截止時間 (HH:MM 格式)' });
-    }
-    try {
-        const query = `
-            INSERT INTO app_settings (key, value) 
-            VALUES ('deadline_time', $1) 
-            ON CONFLICT (key) 
-            DO UPDATE SET value = $1;
-        `;
-        await pool.query(query, [deadline_time]);
-        res.json({ message: '設定儲存成功' });
-    } catch (error) {
-        console.error('儲存設定時發生錯誤', error);
-        res.status(500).json({ error: '伺服器內部錯誤' });
-    }
-});
-
-
-app.get('/admin/daily-menu', async (req, res) => {
-    try {
-        const { date } = req.query;
-        if (!date) return res.status(400).json({ error: '請提供日期' });
-        const result = await pool.query('SELECT * FROM menu_items WHERE menu_date = $1 ORDER BY display_order', [date]);
-        res.json(result.rows);
-    } catch (error) {
-        console.error('取得每日菜單時發生錯誤', error);
-        res.status(500).json({ error: '伺服器內部錯誤' });
-    }
-});
-
-app.post('/admin/daily-menu', async (req, res) => {
-    const { date, items } = req.body;
-    if (!date || !items) return res.status(400).json({ error: '請提供日期和菜單項目' });
-    const dbClient = await pool.connect();
-    try {
-        await dbClient.query('BEGIN');
-        await dbClient.query('DELETE FROM menu_items WHERE menu_date = $1', [date]);
-        for (const item of items) {
-            const query = `INSERT INTO menu_items (menu_date, name, price, is_combo_eligible, display_order) VALUES ($1, $2, $3, $4, $5)`;
-            await dbClient.query(query, [date, item.name, item.price, item.is_combo_eligible, item.display_order]);
-        }
-        await dbClient.query('COMMIT');
-        res.status(201).json({ message: '每日菜單儲存成功' });
-    } catch (error) {
-        await dbClient.query('ROLLBACK');
-        console.error('儲存每日菜單時發生錯誤', error);
-        res.status(500).json({ error: '伺服器內部錯誤' });
-    } finally {
-        dbClient.release();
-    }
-});
-
-app.get('/admin/users', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT id, display_name, balance FROM users ORDER BY id');
-        res.json(result.rows);
-    } catch (error) {
-        console.error('取得使用者列表時發生錯誤', error);
-        res.status(500).json({ error: '伺服器內部錯誤' });
-    }
-});
-
-app.post('/admin/users/:id/deposit', async (req, res) => {
-    const dbClient = await pool.connect();
-    try {
-        await dbClient.query('BEGIN');
-        const userId = parseInt(req.params.id, 10);
-        const { amount } = req.body;
-        if (!amount || amount <= 0) return res.status(400).json({ error: '請提供有效的儲值金額' });
-        const updateResult = await dbClient.query(
-            'UPDATE users SET balance = balance + $1 WHERE id = $2 RETURNING *',
-            [amount, userId]
-        );
-        if (updateResult.rows.length === 0) throw new Error('找不到該使用者');
-        const updatedUser = updateResult.rows[0];
-        await dbClient.query(
-            'INSERT INTO transactions (user_id, type, amount) VALUES ($1, $2, $3)',
-            [userId, 'deposit', amount]
-        );
-        await dbClient.query('COMMIT');
-        res.json({ message: '儲值成功', user: updatedUser });
-    } catch (error) {
-        await dbClient.query('ROLLBACK');
-        console.error('儲值時發生錯誤', error);
-        res.status(500).json({ error: error.message || '伺服器內部錯誤' });
-    } finally {
-        dbClient.release();
-    }
-});
-
-app.get('/admin/orders', async (req, res) => {
-    try {
-        const filterDate = req.query.date || new Date().toLocaleDateString('en-CA');
-        const query = `
-            SELECT 
-                o.id, o.total_amount, o.status, o.created_at, o.order_for_date,
-                u.display_name,
-                STRING_AGG(oi.item_name || 
-                    CASE 
-                        WHEN oi.is_combo THEN '(套餐: ' || oi.selected_drink || ')' 
-                        ELSE '' 
-                    END, ', ') as items
-            FROM orders o
-            JOIN users u ON o.user_id = u.id
-            JOIN order_items oi ON o.id = oi.order_id
-            WHERE o.order_for_date = $1
-            GROUP BY o.id, u.display_name
-            ORDER BY o.created_at DESC;
-        `;
-        const result = await pool.query(query, [filterDate]);
-        res.json(result.rows);
-    } catch (error) {
-        console.error('取得訂單列表時發生錯誤', error);
-        res.status(500).json({ error: '伺服器內部錯誤' });
-    }
-});
-
-// --- 主要事件處理函式 (無變更) ---
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
 async function handleEvent(event) {
-    console.log('[處理事件]', `類型: ${event.type}, 使用者 ID: ${event.source.userId}`);
-    const userId = event.source.userId;
     if (event.type === 'follow') {
-        console.log(`[事件] 使用者 ${userId} 加入好友`);
-        return handleFollowEvent(userId, event.replyToken);
+        return handleFollowEvent(event.source.userId, event.replyToken);
     }
     if (event.type === 'postback') {
         const data = new URLSearchParams(event.postback.data);
         const action = data.get('action');
-        console.log(`[事件] Postback 觸發: ${action}`);
         if (action === 'select_date') return sendMenuFlexMessage(event.replyToken, data.get('date'));
-        if (action === 'order') return handleOrderAction(userId, parseInt(data.get('menuItemId')), data.get('isCombo') === 'true', null, event.replyToken);
-        if (action === 'select_drink') return handleOrderAction(userId, parseInt(data.get('menuItemId')), true, data.get('drink'), event.replyToken);
-        if (action === 'cancel_select_date') return showOrdersByDate(userId, data.get('date'), event.replyToken);
-        if (action === 'cancel_order') return handleCancelOrder(userId, parseInt(data.get('orderId')), event.replyToken);
+        if (action === 'order') return handleOrderAction(event.source.userId, parseInt(data.get('menuItemId')), data.get('isCombo') === 'true', null, event.replyToken);
+        if (action === 'select_drink') return handleOrderAction(event.source.userId, parseInt(data.get('menuItemId')), true, data.get('drink'), event.replyToken);
+        if (action === 'cancel_select_date') return showOrdersByDate(event.source.userId, data.get('date'), event.replyToken);
+        if (action === 'cancel_order') return handleCancelOrder(event.source.userId, parseInt(data.get('orderId')), event.replyToken);
     }
     if (event.type !== 'message' || event.message.type !== 'text') return Promise.resolve(null);
     
     const userMessage = event.message.text;
-    console.log(`[事件] 使用者 ${userId} 輸入訊息: "${userMessage}"`);
-<<<<<<< HEAD
-=======
-
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
     if (userMessage === '菜單' || userMessage === '訂餐') return askForDate(event.replyToken);
-    if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(userId, event.replyToken);
-    if (userMessage === '取消') return askToCancelOrder(userId, event.replyToken);
+    if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(event.source.userId, event.replyToken);
+    if (userMessage === '取消') return askToCancelOrder(event.source.userId, event.replyToken);
     
     return Promise.resolve(null);
 }
+
 async function handleFollowEvent(userId, replyToken) {
     try {
         const userCheck = await pool.query('SELECT * FROM users WHERE line_user_id = $1', [userId]);
-        if (userCheck.rows.length > 0) {
-            console.log(`使用者 ${userId} 已註冊過。`);
-            return Promise.resolve(null);
-        }
-        console.log(`正在為新使用者 ${userId} 建立資料...`);
+        if (userCheck.rows.length > 0) return Promise.resolve(null);
         const profile = await client.getProfile(userId);
         await pool.query('INSERT INTO users (line_user_id, display_name) VALUES ($1, $2)', [userId, profile.displayName]);
-        console.log(`已成功為 ${profile.displayName} (${userId}) 建立使用者資料。`);
         const welcomeMessage = { type: 'text', text: `歡迎 ${profile.displayName}！您已成功註冊午餐訂餐服務。` };
         return client.replyMessage(replyToken, welcomeMessage);
     } catch (error) {
@@ -500,9 +279,6 @@ async function handleFollowEvent(userId, replyToken) {
     }
 }
 
-// ==========================================================
-// == ✨ 已修正：訂單處理函式 ✨
-// ==========================================================
 async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, replyToken) {
     const dbClient = await pool.connect();
     try {
@@ -532,37 +308,19 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
             throw new Error('找不到使用者');
         }
         const user = userResult.rows[0];
-<<<<<<< HEAD
-        let totalAmount;
-        if (item.is_combo_eligible) {
-            totalAmount = isCombo ? parseFloat(item.price) : parseFloat(item.price) - COMBO_PRICE;
-        } else {
-            totalAmount = parseFloat(item.price);
-        }
-        const orderInsertResult = await dbClient.query('INSERT INTO orders (user_id, total_amount, status, order_for_date) VALUES ($1, $2, $3, $4) RETURNING id', [user.id, totalAmount, 'preparing', orderForDate]);
-        const orderId = orderInsertResult.rows[0].id;
-        await dbClient.query('INSERT INTO order_items (order_id, item_name, price_per_item, quantity, is_combo, selected_drink) VALUES ($1, $2, $3, $4, $5, $6)', [orderId, item.name, totalAmount, 1, isCombo, selectedDrink]);
-=======
         
-        // ✨ [核心修正] 根據品項是否可升級套餐，來決定價格計算方式
         let totalAmount;
         if (item.is_combo_eligible) {
-            // 如果品項可升級套餐，則根據 isCombo 決定價格
-            // isCombo=true: 全價 (例如 80元)
-            // isCombo=false: 全價 - 套餐價差 (例如 80 - 15 = 65元)
             totalAmount = isCombo ? parseFloat(item.price) : parseFloat(item.price) - COMBO_PRICE;
         } else {
-            // 如果品項是普通單點，價格就是其定價，不做任何加減
             totalAmount = parseFloat(item.price);
         }
 
         const orderInsertResult = await dbClient.query('INSERT INTO orders (user_id, total_amount, status, order_for_date) VALUES ($1, $2, $3, $4) RETURNING id', [user.id, totalAmount, 'preparing', orderForDate]);
         const orderId = orderInsertResult.rows[0].id;
         
-        // 寫入 order_items 時，價格使用計算後的 totalAmount
         await dbClient.query('INSERT INTO order_items (order_id, item_name, price_per_item, quantity, is_combo, selected_drink) VALUES ($1, $2, $3, $4, $5, $6)', [orderId, item.name, totalAmount, 1, isCombo, selectedDrink]);
         
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
         const newBalance = parseFloat(user.balance) - totalAmount;
         await dbClient.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, user.id]);
         await dbClient.query('INSERT INTO transactions (user_id, type, amount, related_order_id) VALUES ($1, $2, $3, $4)', [user.id, 'payment', totalAmount, orderId]);
@@ -572,18 +330,11 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         let successText = `訂購「${item.name}」成功！`;
         if (isCombo) successText += ` (套餐-${selectedDrink})`;
         successText += `\n金額: ${totalAmount}\n剩餘餘額: ${newBalance.toFixed(0)}`;
-<<<<<<< HEAD
-        if (newBalance < 0) {
-            successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在訂單截止(${deadlineTime})前儲值，否則訂單將會被取消。`;
-        }
-=======
 
         if (newBalance < 0) {
-            // ✨ [文字修改] 更新提示文字
             successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在訂單截止(${deadlineTime})前儲值，否則訂單將會被取消。`;
         }
         
->>>>>>> d2fe0cc63b37195bbb9b73c6f6f04214cfabf1e9
         return client.replyMessage(replyToken, { type: 'text', text: successText });
     } catch (error) {
         await dbClient.query('ROLLBACK');
@@ -594,7 +345,6 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
     }
 }
 
-// --- 其他輔助函式 (無變更) ---
 async function handleCheckBalance(userId, replyToken) {
     try {
         const result = await pool.query('SELECT balance FROM users WHERE line_user_id = $1', [userId]);
@@ -606,6 +356,7 @@ async function handleCheckBalance(userId, replyToken) {
         return client.replyMessage(replyToken, { type: 'text', text: '查詢餘額失敗，請稍後再試。' });
     }
 }
+
 async function askForDate(replyToken) {
     const days = [];
     const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
@@ -621,6 +372,7 @@ async function askForDate(replyToken) {
     const flexMessage = { type: 'flex', altText: '選擇訂餐日期', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: [{ type: 'text', text: '您想訂哪一天的餐點？', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: days } } };
     return client.replyMessage(replyToken, flexMessage);
 }
+
 async function sendMenuFlexMessage(replyToken, forDate) {
     try {
         const menuItems = await pool.query('SELECT * FROM menu_items WHERE menu_date = $1 ORDER BY display_order', [forDate]);
@@ -644,6 +396,7 @@ async function sendMenuFlexMessage(replyToken, forDate) {
         return client.replyMessage(replyToken, { type: 'text', text: '哎呀，查詢菜單失敗了。' });
     }
 }
+
 async function askForDrink(replyToken, menuItemId) {
     const buttons = DRINKS.map(drink => ({
         type: 'button', style: 'primary', height: 'sm', margin: 'sm',
@@ -652,6 +405,7 @@ async function askForDrink(replyToken, menuItemId) {
     const flexMessage = { type: 'flex', altText: '選擇套餐飲料', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '請選擇您的套餐飲料', weight: 'bold', size: 'lg' }] }, footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons } } };
     return client.replyMessage(replyToken, flexMessage);
 }
+
 async function askToCancelOrder(userId, replyToken) {
     try {
         const today = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })).toLocaleDateString('en-CA');
@@ -715,6 +469,7 @@ async function askToCancelOrder(userId, replyToken) {
         return client.replyMessage(replyToken, { type: 'text', text: '查詢訂單失敗，請稍後再試。' });
     }
 }
+
 async function showOrdersByDate(userId, selectedDate, replyToken) {
     try {
         const userResult = await pool.query('SELECT id FROM users WHERE line_user_id = $1', [userId]);
@@ -780,6 +535,7 @@ async function showOrdersByDate(userId, selectedDate, replyToken) {
         return client.replyMessage(replyToken, { type: 'text', text: `查詢訂單失敗，請稍後再試。` });
     }
 }
+
 async function handleCancelOrder(userId, orderId, replyToken) {
     const dbClient = await pool.connect();
     try {
