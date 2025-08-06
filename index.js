@@ -1,18 +1,19 @@
 /*
  * =================================================================
- * == 檔案: index.js (已修正語法錯誤)
+ * == 檔案: index.js
  * =================================================================
- * ✨ 更新重點 ✨
- * - 徹底更換菜單解析引擎，改用更穩定、更準確的「座標定位解析法」。
- * - 新的 `parseMenuFromAnnotations` 函式利用 Vision API 提供的單字座標，來定位價格並反向推導品項名稱。
- * - 此方法能有效克服 OCR 文字間距不穩定的問題，大幅提升對表格類菜單的辨識成功率。
+ * ✨ 2025-08-06 更新重點 ✨
+ * - 移除 cron 自動排程結算，改為手動觸發。
+ * - 新增管理員指令 `結算`，管理員在 LINE 輸入後即可觸發當日結算流程。
+ * - `runDailySettlement` 函式已修改，以支援手動觸發並回傳執行結果。
+ * - `handleEvent` 函式已更新，加入對 `結算` 指令的處理。
+ * - 新增 `handleSettlementCommand` 函式，用於處理結算指令的權限驗證與流程控制。
  */
 // --- 1. 引入需要的套件 ---
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { Pool } = require('pg');
 const cors = require('cors');
-const cron = require('node-cron');
 const path = require('path');
 const vision = require('@google-cloud/vision');
 
@@ -61,7 +62,7 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 });
 
 // ==========================================================
-// == ✨ [路由順序修正] 將所有 API 路由放在前面 ✨
+// == 後台管理 API
 // ==========================================================
 
 // --- 後台管理 API ---
@@ -99,7 +100,6 @@ app.post('/admin/parse-menu-from-image', async (req, res) => {
             return res.status(404).json({ error: '有圖片無法辨識到任何文字' });
         }
         
-        // ✨ 使用全新的座標解析函式
         const parsedSingleItems = parseMenuFromAnnotations(singleDetections, false);
         const parsedComboItems = parseMenuFromAnnotations(comboDetections, true);
 
@@ -262,26 +262,20 @@ app.get('/admin/orders', async (req, res) => {
     }
 });
 
-// --- 後台管理頁面路由 (這個必須放在所有 /admin/... API 之後) ---
+// --- 後台管理頁面路由 ---
 app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
 // --- 主要邏輯函式 ---
 
-// ✨ [全新座標解析引擎]
 function parseMenuFromAnnotations(detections, isComboEligible) {
-    // 第一個是全文，我們需要的是後面的個別詞彙
     const annotations = detections.slice(1);
     const menuItems = [];
-    const lines = {}; // 用來根據 Y 座標將詞彙分行
-
-    // 步驟 1: 將所有詞彙根據 Y 座標分行
+    const lines = {};
     for (const annotation of annotations) {
-        // 使用詞彙頂部 Y 座標的平均值作為基準
         const y = (annotation.boundingPoly.vertices[0].y + annotation.boundingPoly.vertices[1].y) / 2;
         let foundLine = false;
-        // 允許 10 像素的誤差
         for (const lineY in lines) {
             if (Math.abs(y - lineY) < 10) {
                 lines[lineY].push(annotation);
@@ -293,44 +287,30 @@ function parseMenuFromAnnotations(detections, isComboEligible) {
             lines[y] = [annotation];
         }
     }
-
-    // 步驟 2: 逐行處理
     for (const lineY in lines) {
-        // 將該行的詞彙由左至右排序
         const lineAnnotations = lines[lineY].sort((a, b) => a.boundingPoly.vertices[0].x - b.boundingPoly.vertices[0].x);
-        
         let price = null;
         let priceIndex = -1;
-
-        // 步驟 3: 在行中找出價格
         for (let i = lineAnnotations.length - 1; i >= 0; i--) {
             const text = lineAnnotations[i].description;
-            // 價格是純數字，且符合常規價格範圍
             if (/^\d{2,3}$/.test(text) && parseInt(text, 10) > 20 && parseInt(text, 10) < 500) {
                 price = parseInt(text, 10);
                 priceIndex = i;
                 break;
             }
         }
-
-        // 如果找到了價格
         if (price !== null) {
-            // 步驟 4: 價格左邊的所有文字都屬於品項名稱
             let nameParts = [];
             for (let i = 0; i < priceIndex; i++) {
                 nameParts.push(lineAnnotations[i].description);
             }
             let name = nameParts.join(' ');
-
-            // 步驟 5: 清理品項名稱
-            name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, ''); // 移除開頭的編號
-            name = name.replace(/\s*\d+卡$/, '').trim(); // 移除熱量
-            name = name.replace(/[|:$]/, '').trim(); // 移除雜訊
-
+            name = name.replace(/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮\d\W]+\s*/, '');
+            name = name.replace(/\s*\d+卡$/, '').trim();
+            name = name.replace(/[|:$]/, '').trim();
             if (isComboEligible) {
-                name = name.replace(/\s*\+\s*紅茶/, '').trim(); // 移除套餐固定的紅茶
+                name = name.replace(/\s*\+\s*紅茶/, '').trim();
             }
-
             if (name.length > 1) {
                 menuItems.push({
                     name: name,
@@ -357,6 +337,12 @@ async function getSetting(key, defaultValue) {
     }
 }
 
+/**
+ * ✨ [已修改] 每日結算函式
+ * - 現在會回傳一個包含執行結果的物件 { success, message }
+ * - 移除時間檢查，因為改為手動觸發
+ * - 增加防呆機制 (重複結算、無訂單)
+ */
 async function runDailySettlement() {
     const now = new Date();
     const taipeiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
@@ -364,19 +350,25 @@ async function runDailySettlement() {
     const dbClient = await pool.connect();
     try {
         await dbClient.query('BEGIN');
+
+        // 檢查1: 今天是否已經結算過？
         const check = await dbClient.query('SELECT * FROM daily_settlements WHERE settlement_date = $1', [settlementDate]);
         if (check.rows.length > 0) {
             await dbClient.query('ROLLBACK');
-            return;
-        }
-        const deadlineTime = await getSetting('deadline_time', '09:00');
-        const [deadlineHour, deadlineMinute] = deadlineTime.split(':').map(Number);
-        const isPastDeadline = taipeiNow.getHours() > deadlineHour || (taipeiNow.getHours() === deadlineHour && taipeiNow.getMinutes() >= deadlineMinute);
-        if (!isPastDeadline) {
-            await dbClient.query('ROLLBACK');
-            return;
+            const settledTime = new Date(check.rows[0].created_at).toLocaleString('zh-TW', { hour12: false });
+            console.log(`[手動結算] ${settlementDate} 的結算已經執行過了。`);
+            return { success: false, message: `今天的結算已經在 ${settledTime} 執行過了。` };
         }
         
+        // 檢查2: 今天是否有任何「準備中」的訂單需要結算？
+        const preparingOrdersCheck = await dbClient.query("SELECT id FROM orders WHERE order_for_date = $1 AND status = 'preparing' LIMIT 1", [settlementDate]);
+        if (preparingOrdersCheck.rows.length === 0) {
+             await dbClient.query('ROLLBACK');
+             console.log(`[手動結算] ${settlementDate} 沒有需要結算的訂單。`);
+             return { success: false, message: `今天 (${settlementDate}) 沒有任何狀態為「準備中」的訂單可以結算。` };
+        }
+        
+        // 取消餘額不足者的訂單
         const negativeUsers = await dbClient.query('SELECT id FROM users WHERE balance < 0');
         const cancelledUserIds = new Set();
         if (negativeUsers.rows.length > 0) {
@@ -400,6 +392,7 @@ async function runDailySettlement() {
             }
         }
 
+        // 通知訂單成功者
         const successOrders = await dbClient.query(`SELECT o.user_id, u.line_user_id, u.balance, STRING_AGG(oi.item_name || CASE WHEN oi.is_combo THEN '(套餐-' || oi.selected_drink || ')' ELSE '' END, ', ') as items FROM orders o JOIN users u ON o.user_id = u.id JOIN order_items oi ON o.id = oi.order_id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY o.user_id, u.line_user_id, u.balance`, [settlementDate]);
         for (const order of successOrders.rows) {
             const message = `您的今日訂單已確認！\n- 品項：${order.items}\n- 您目前的餘額為 ${parseFloat(order.balance).toFixed(0)} 元。`;
@@ -410,42 +403,98 @@ async function runDailySettlement() {
             }
         }
         
-        const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
+        // 產生統計報告
+        const summaryResult = await dbClient.query(`SELECT item_name || CASE WHEN is_combo THEN '(套餐)' ELSE '' END as full_item_name, selected_drink, COUNT(*) as count, SUM(price_per_item) as subtotal FROM order_items oi JOIN orders o ON oi.order_id = o.id WHERE o.order_for_date = $1 AND o.status = 'preparing' GROUP BY full_item_name, selected_drink`, [settlementDate]);
         let summaryText;
         if (summaryResult.rows.length > 0) {
             summaryText = `--- ${settlementDate} 訂單統計 ---\n`;
             const drinkSummary = {};
+            let totalOrders = 0;
+            let totalAmount = 0;
             summaryResult.rows.forEach(row => {
                 const orderCount = parseInt(row.count);
                 summaryText += `${row.full_item_name}: ${orderCount}份\n`;
+                totalOrders += orderCount;
+                totalAmount += parseFloat(row.subtotal);
                 if (row.selected_drink) {
                     drinkSummary[row.selected_drink] = (drinkSummary[row.selected_drink] || 0) + orderCount;
                 }
             });
             summaryText += '\n--- 飲料統計 ---\n';
-            for (const drink in drinkSummary) {
-                summaryText += `${drink}: ${drinkSummary[drink]}杯\n`;
+            let totalDrinks = 0;
+            if (Object.keys(drinkSummary).length > 0) {
+                for (const drink in drinkSummary) {
+                    summaryText += `${drink}: ${drinkSummary[drink]}杯\n`;
+                    totalDrinks += drinkSummary[drink];
+                }
+            } else {
+                summaryText += '無\n';
             }
+            summaryText += `\n--- 總計 ---\n`;
+            summaryText += `總訂單數: ${totalOrders} 份\n`;
+            summaryText += `總飲料數: ${totalDrinks} 杯\n`;
+            summaryText += `總金額: ${totalAmount} 元`;
+
         } else {
             summaryText = `--- ${settlementDate} 訂單報告 ---\n\n今日沒有任何成功結算的訂單。`;
         }
+
+        // 發送報告給所有管理員
         const admins = await dbClient.query('SELECT line_user_id FROM users WHERE is_admin = true');
         if (admins.rows.length > 0) {
             const adminIds = admins.rows.map(a => a.line_user_id);
             await client.multicast(adminIds, [{ type: 'text', text: summaryText }]);
         }
         
+        // 完成結算
         await dbClient.query("UPDATE orders SET status = 'finished' WHERE order_for_date = $1 AND status = 'preparing'", [settlementDate]);
         await dbClient.query('INSERT INTO daily_settlements (settlement_date, is_broadcasted) VALUES ($1, true)', [settlementDate]);
         await dbClient.query('COMMIT');
+
+        return { success: true, message: `結算完成！統計報告已發送給所有管理員。` };
+
     } catch (error) {
         await dbClient.query('ROLLBACK');
         console.error(`[結算任務失敗] 結算 ${settlementDate} 時發生錯誤`, error);
+        return { success: false, message: `結算失敗，發生內部錯誤，請查看伺服器日誌。` };
     } finally {
         dbClient.release();
     }
 }
 
+/**
+ * ✨ [新增] 處理「結算」指令的函式
+ */
+async function handleSettlementCommand(userId, replyToken) {
+    try {
+        // 驗證使用者是否為管理員
+        const userResult = await pool.query('SELECT is_admin FROM users WHERE line_user_id = $1', [userId]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].is_admin) {
+            return client.replyMessage(replyToken, { type: 'text', text: '您沒有執行此操作的權限。' });
+        }
+
+        // 先回覆一個處理中訊息，避免 replyToken 過期
+        await client.replyMessage(replyToken, { type: 'text', text: '收到結算指令，正在處理中，請稍候...' });
+
+        // 執行結算邏輯
+        const result = await runDailySettlement();
+
+        // 使用 pushMessage 推送最終結果給發起指令的管理員
+        // (因為 replyToken 已被使用過)
+        return client.pushMessage(userId, { type: 'text', text: result.message });
+
+    } catch (error) {
+        console.error('處理結算指令時發生錯誤', error);
+        // 發生錯誤時也用 pushMessage 通知
+        return client.pushMessage(userId, { type: 'text', text: '處理結算指令時發生未預期的錯誤。' });
+    }
+}
+
+
+/**
+ * ✨ [已修改] 主事件處理函式
+ * - 加入對 `結算` 文字訊息的判斷
+ */
 async function handleEvent(event) {
     if (event.type === 'follow') {
         return handleFollowEvent(event.source.userId, event.replyToken);
@@ -461,10 +510,15 @@ async function handleEvent(event) {
     }
     if (event.type !== 'message' || event.message.type !== 'text') return Promise.resolve(null);
     
-    const userMessage = event.message.text;
+    const userMessage = event.message.text.trim();
     if (userMessage === '菜單' || userMessage === '訂餐') return askForDate(event.replyToken);
     if (userMessage === '餘額' || userMessage === '查詢餘額') return handleCheckBalance(event.source.userId, event.replyToken);
     if (userMessage === '取消') return askToCancelOrder(event.source.userId, event.replyToken);
+    
+    // ✨ 新增「結算」指令處理
+    if (userMessage === '結算') {
+        return handleSettlementCommand(event.source.userId, event.replyToken);
+    }
     
     return Promise.resolve(null);
 }
@@ -535,6 +589,7 @@ async function handleOrderAction(userId, menuItemId, isCombo, selectedDrink, rep
         successText += `\n金額: ${totalAmount}\n剩餘餘額: ${newBalance.toFixed(0)}`;
 
         if (newBalance < 0) {
+            const deadlineTime = await getSetting('deadline_time', '09:00');
             successText += `\n\n⚠️提醒：您的餘額已為負數，請記得在訂單截止(${deadlineTime})前儲值，否則訂單將會被取消。`;
         }
         
@@ -553,7 +608,7 @@ async function handleCheckBalance(userId, replyToken) {
         const result = await pool.query('SELECT balance FROM users WHERE line_user_id = $1', [userId]);
         if (result.rows.length === 0) return client.replyMessage(replyToken, { type: 'text', text: '找不到您的帳戶資料，請嘗試重新加入好友。' });
         const balance = parseFloat(result.rows[0].balance).toFixed(0);
-        return client.replyMessage(replyToken, { type: 'text', text: `您目前的餘額為: ${balance}` });
+        return client.replyMessage(replyToken, { type: 'text', text: `您目前的餘額為: ${balance}元` });
     } catch (error) {
         console.error('查詢餘額時發生錯誤', error);
         return client.replyMessage(replyToken, { type: 'text', text: '查詢餘額失敗，請稍後再試。' });
@@ -781,15 +836,8 @@ async function handleCancelOrder(userId, orderId, replyToken) {
 const port = process.env.PORT || 8080;
 const host = '0.0.0.0';
 
+// ✨ [已修改] 移除 cron 排程
 app.listen(port, host, () => {
   console.log(`伺服器正在 ${host}:${port} 上成功運行`);
-  
-  cron.schedule('* * * * *', () => {
-    console.log(`[內建排程] 每分鐘檢查一次，當前時間: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' })}`);
-    runDailySettlement();
-  }, {
-    scheduled: true,
-    timezone: "Asia/Taipei"
-  });
-
+  console.log('每日結算排程已移除，等待管理員從 LINE 手動觸發。');
 });
